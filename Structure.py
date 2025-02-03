@@ -5,6 +5,7 @@ from utils import cal_macd
 from sklearn.preprocessing import QuantileTransformer
 
 ANGLE = 0.015
+SCALED_BANDS = 0.09
 
 class Structure:
     def __init__(self):
@@ -39,18 +40,39 @@ class Structure:
         previous_block = self.get_block_by_id(current_block_id - 2)
         result = compare_block(previous_block, current_block)
         if result is not None:
-            middle_block = self.get_block_by_id(current_block_id - 1)
-            if block_not_cross_zero_axis(middle_block, result):
-                return result
+            return self.exclude_low_probability_structure(result, 0, current_block_id)
             
         if current_block_id > 4:
             earlier_block = self.get_block_by_id(current_block_id - 4)
             result = compare_block(earlier_block, current_block)
             if result is not None:
-                middle_block_1 = self.get_block_by_id(current_block_id - 1)
-                middle_block_2 = self.get_block_by_id(current_block_id - 3)
-                if block_not_cross_zero_axis(middle_block_1, result) and block_not_cross_zero_axis(middle_block_2, result):
-                    return result
+                return self.exclude_low_probability_structure(result, 1, current_block_id)
+                
+    def exclude_low_probability_structure(self, result, gap_type, current_block_id):
+        """
+        如果是低概率的结构 会直接返回None
+        Args:
+            result (str): 不参与运算
+            gap_type (int): 0-临峰 1-隔峰
+            current_block_id (int): 当前区块id
+
+        Returns:
+            None or result
+        """
+        df = self.data
+        if gap_type == 0:
+            middle_block = self.get_block_by_id(current_block_id - 1)
+            related_blocks = df[(df['block_id'] >= current_block_id - 2) & (df['block_id'] <= current_block_id)]
+            if block_not_cross_zero_axis(middle_block, result) and not trend_convergence(related_blocks):
+                return result
+        
+        if gap_type == 1:
+            middle_block_1 = self.get_block_by_id(current_block_id - 1)
+            middle_block_2 = self.get_block_by_id(current_block_id - 3)
+            related_blocks = df[(df['block_id'] >= current_block_id - 4) & (df['block_id'] <= current_block_id)]
+            if block_not_cross_zero_axis(middle_block_1, result) and block_not_cross_zero_axis(middle_block_2, result) and not trend_convergence(related_blocks):
+                return result
+        
 
     def cal_exit_signal(self, bars, position_direction, entry_price, entry_time, max_loss=0.01, holding_period=26):
         """
@@ -139,8 +161,11 @@ def process_blocks(df):
     n_quantiles = min(len(df), 1000)  # 设置最大值为1000，避免过大的量
     scaler = QuantileTransformer(output_distribution='uniform', n_quantiles=n_quantiles)
     quantile_scaled = scaler.fit_transform(df[["DIF"]])
-    df["angle"] = 2 * quantile_scaled - 1
-    df["angle"] = df["angle"].diff()
+    df["DIF_scaled"] = 2 * quantile_scaled - 1
+    df["angle"] = df["DIF_scaled"].diff()
+
+    quantile_scaled = scaler.fit_transform(df[["DEA"]])
+    df["DEA_scaled"] = 2 * quantile_scaled - 1
     
     return df
 
@@ -178,4 +203,33 @@ def block_not_cross_zero_axis(block, structure_type):
         return False
         
     return True
+    
+def trend_convergence(df, threshold=0.6):
+    """
+    过滤掉DIF和DEA线走势粘合的信号
+
+    参数:
+    df: 包含DIF和DEA列的DataFrame
+    window: 用于计算粘合的窗口大小（例如50行）
+    threshold: 重合比例的阈值，若超过该比例则认为信号无效
+
+    返回:
+    返回一个经过滤的DataFrame
+    """
+    # 获取当前窗口内的DIF和DEA值
+    dif_vals = df['DIF_scaled']
+    dea_vals = df['DEA_scaled']
+    
+    # 计算每行DIF和DEA的区间是否重合
+    dif_upper = dif_vals + SCALED_BANDS
+    dif_lower = dif_vals - SCALED_BANDS
+    dea_upper = dea_vals + SCALED_BANDS
+    dea_lower = dea_vals - SCALED_BANDS
+    
+    # 判断是否重合：检查区间是否交集
+    is_coveraged = (dif_lower <= dea_upper) & (dif_upper >= dea_lower)
+    
+    # print(df.iloc[0]["date"], df.iloc[-1]["date"], is_coveraged.sum() / len(df) >= threshold)
+    # 如果重合超过阈值，则标记为True
+    return is_coveraged.sum() / len(df) >= threshold
     
