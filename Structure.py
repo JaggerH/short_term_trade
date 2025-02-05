@@ -1,11 +1,12 @@
 import talib
 import pandas as pd
 from datetime import timedelta
-from utils import cal_macd
+from utils import macd
 from sklearn.preprocessing import QuantileTransformer
 
 ANGLE = 0.015
-SCALED_BANDS = 0.09
+SCALED_BANDS = 0.07
+DISPEAR_ANGLE = 0.02
 
 class Structure:
     def __init__(self):
@@ -19,7 +20,7 @@ class Structure:
         else:
             df = bars
         
-        df['DIF'], df['DEA'], df['MACD'] = cal_macd(df['close'], fastperiod=12, slowperiod=26, signalperiod=9)
+        df['DIF'], df['DEA'], df['MACD'] = macd(df['close'], fastperiod=12, slowperiod=26, signalperiod=9)
         df = process_blocks(df)
         self.data = df
         self.has_prepare_data = True
@@ -73,7 +74,6 @@ class Structure:
             if block_not_cross_zero_axis(middle_block_1, result) and block_not_cross_zero_axis(middle_block_2, result) and not trend_convergence(related_blocks):
                 return result
         
-
     def cal_exit_signal(self, bars, position_direction, entry_price, entry_time, max_loss=0.01, holding_period=26):
         """
         :params
@@ -85,16 +85,12 @@ class Structure:
         df = self.data
         
         current_price = df.iloc[-1]['close']
-        current_dif = df.iloc[-1]['DIF']
-        # time_elapsed = len(df) - entry_time
         time_elapsed = df.iloc[-1]['date'] - entry_time
-        # print('cal_exit_signal', time_elapsed)
+        angle = df.iloc[-1]['angle']
 
         # 条件 1: MACD向背离方向变化
-        angle = df.iloc[-1]['angle']
-        # print('cal_exit_signal', current_dif, angle)
-        # if (position_direction < 0 and angle >= 0.015) or (position_direction > 0 and angle <= -0.015):
-        #     return "平仓信号：MACD背离方向变化"
+        if (position_direction < 0 and angle >= DISPEAR_ANGLE) or (position_direction > 0 and angle <= -1 * DISPEAR_ANGLE):
+            return "平仓信号：MACD背离方向变化"
 
         # 条件 2: 亏损达到1%
         if (entry_price - current_price) / entry_price >= max_loss:
@@ -103,12 +99,6 @@ class Structure:
         # 条件 3: 持有时间超过26个周期
         if time_elapsed >= timedelta(minutes=holding_period):
             return "平仓信号：持有时间超限"
-
-        # 条件 4: MACD反向变化
-        # if current_macd < 0 and previous_macd > current_macd:
-        #     return "平仓信号：MACD反向变化"
-        # if current_macd > 0 and previous_macd < current_macd:
-        #     return "平仓信号：MACD反向变化"
 
         return False  # 无平仓信号
     

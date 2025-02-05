@@ -1,6 +1,7 @@
 import talib
+import numpy as np
 
-def cal_macd(close, fastperiod=12, slowperiod=26, signalperiod=9):
+def macd(close, fastperiod=12, slowperiod=26, signalperiod=9):
     """
     计算 MACD 指标（结合 talib 和 pandas 计算方式）
     
@@ -32,3 +33,17 @@ def cal_macd(close, fastperiod=12, slowperiod=26, signalperiod=9):
     
     # 返回计算结果
     return dif, dea, macd
+
+def vwap(close, volume):
+    price_volume = close * volume
+
+    # 计算累计和
+    cumulative_price_volume = price_volume.cumsum()
+    cumulative_volume = volume.cumsum()
+
+    # 计算 VWAP
+    return cumulative_price_volume / cumulative_volume
+
+def volatility(close):
+    log_returns = np.log(close / close.shift(1)).dropna()
+    return log_returns.std()
