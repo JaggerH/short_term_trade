@@ -16,7 +16,8 @@ class PositionManager:
         self.positions = []  # 存储多个合约的仓位信息
         self.trade_log = []  # 交易记录列表
         self.trades    = []  # 记录下单中的交易
-
+        self.ib.orderStatusEvent += self.on_order_status
+        
     def find_position(self, symbol):
         return next((item for item in self.positions if item.get("symbol") == symbol), None)
         
@@ -74,21 +75,33 @@ class PositionManager:
         """
         self.positions = [pos for pos in self.positions if pos["symbol"] != symbol]
 
-    def add_trade(self, trade):
-        self.trades.append(trade)
+    def find_trade(self, contract, amount):
+        """
+            {
+                "trade": instanceof trade,
+                "entry_time": timestamp,
+                "type": str 开仓或平仓,
+                "callback": function
+            }
+        """
+        action = 'BUY' if amount > 0 else 'SELL'
+        amount = abs(amount)
+        return next((item for item in self.trades if item["trade"].contract == contract and item["trade"].order.action == action and item["trade"].order.totalQuantity == amount), None)
+    
+    def find_trade_by_order_id(self, orderId):
+        return next((item for item in self.trades if item["trade"].order.orderId == orderId), None)
+        
+    def add_trade(self, item):
+        self.trades.append(item)
         
     def remove_trade(self, contract, amount):
         trade = self.find_trade(contract, amount)
         self.trades.remove(trade)
         
-    def remove_trade(self, trade):
+    def remove_trade_by_order_id(self, orderId):
+        trade = self.find_trade_by_order_id(orderId)
         self.trades.remove(trade)
         
-    def find_trade(self, contract, amount):
-        action = 'BUY' if amount > 0 else 'SELL'
-        amount = abs(amount)
-        return next((trade for trade in self.trades if trade.contract == contract and trade.order.action == action and trade.order.totalQuantity == amount), None)
-    
     def log_trade(self, symbol, open_or_close, direction, amount, time):
         """
         记录交易信息
@@ -109,17 +122,21 @@ class PositionManager:
 
         self.add_position(symbol, entry_price, amount, entry_time)
         self.log_trade(symbol, "开仓", direction, amount, entry_time)  # 记录交易
-        print(f"【{entry_time}】开仓: {symbol}, 方向： {direction}, 数量： {amount}, 价格: {entry_price}, 预估市值：{amount * entry_price}")
-
+    
     def ibkr_open_position(self, contract, amount, entry_time):
+        def callback(trade, entry_time=entry_time):
+            """
+            回调函数，处理订单完成后的逻辑
+            """
+            if trade.orderStatus.status == 'Filled':
+                print(f"订单完全成交: {trade.orderStatus.filled}股, 平均成交价: {trade.orderStatus.avgFillPrice}")
+                self.add_position(contract.symbol, trade.orderStatus.avgFillPrice, trade.orderStatus.filled, entry_time)
+                self.log_trade(contract.symbol, "开仓", trade.order.action, trade.orderStatus.filled, trade.fills[-1].time)  # 记录交易
+                self.remove_trade_by_order_id(trade.order.orderId)
+                
         if not self.find_trade(contract, amount):
             trade = self.ibkr_trade(contract, amount)
-            self.add_trade(trade)
-            trade = self.wait_ibkr_trade(trade)
-            filled_amount = trade.orderStatus.filled
-            if filled_amount > 0:
-                self.add_position(contract.symbol, trade.orderStatus.avgFillPrice, trade.orderStatus.filled, entry_time)
-            self.remove_trade(trade)
+            self.add_trade({ "trade": trade, "entry_time": entry_time, "type": "开仓", "callback": callback })
             
     def debug_close_position(self, contract, exit_time, entry_price, exit_price, exit_signal):
         """
@@ -134,17 +151,25 @@ class PositionManager:
         self.log_trade(symbol, "平仓", direction, amount, exit_time)  # 记录交易
         pnl = (exit_price - entry_price) * amount
         print(f"【{exit_time}】平仓: {symbol}, 价格: {exit_price}, 平仓原因：{exit_signal}, 浮动盈亏：{pnl}")
-        
+           
     def ibkr_close_position(self, contract, amount, exit_time):
-        position = self.find_position(contract.symbol)
-        direction = "Bought" if position["amount"] < 0 else "Sold" # 因为要做反向操作
+        amount = -1 * amount
         
+        def callback(trade):
+            if trade.orderStatus.status == 'Filled':
+                self.log_trade(contract.symbol, "平仓",  trade.order.action, trade.orderStatus.filled, trade.fills[-1].time)  # 记录交易
+                position = self.find_position(contract.symbol)    
+                exit_price = trade.orderStatus.avgFillPrice
+                entry_price = position["price"]    
+                pnl = (exit_price - entry_price) * amount
+                self.remove_position(contract.symbol)
+                print(f"【{trade.fills[-1].time}】平仓: {contract.symbol}, 价格: {trade.orderStatus.filled}, 浮动盈亏：{pnl}")
+                
+                self.remove_trade_by_order_id(trade.order.orderId)
+            
         if not self.find_trade(contract, amount):
             trade = self.ibkr_trade(contract, amount)
-            self.add_trade(trade)
-            self.wait_ibkr_trade(trade, cancelOrder=False)
-            self.remove_trade(trade)
-            self.log_trade(contract.symbol, "平仓", direction, trade.orderStatus.filled, trade.orderStatus.log[-1].time, exit_time)  # 记录交易
+            self.add_trade({ "trade": trade, "entry_time": exit_time, "type": "平仓", "callback": callback })
             
     def ibkr_trade(self, contract, amount):
         assert amount != 0
@@ -155,7 +180,14 @@ class PositionManager:
         trade = self.ib.placeOrder(contract, order)
         return trade
 
-    def wait_ibkr_trade(self, trade, cancelOrder=True, cancelTime=30):
+    def on_order_status(self, trade):
+        """
+        处理订单状态更新的回调函数
+        """
+        _trade = self.find_trade_by_order_id(trade.order.orderId)
+        if _trade: _trade["callback"](trade)
+            
+    async def wait_ibkr_trade(self, trade, cancelOrder=True, cancelTime=30):
         """
         下单并监听订单状态，支持超时取消和部分成交。
         """        
@@ -179,7 +211,7 @@ class PositionManager:
             return trade  # 返回订单，即使它被取消或部分成交
         else:
             while True:
-                self.ib.sleep(1)  # 每秒检查一次订单状态
+                await self.ib.sleep(1)  # 每秒检查一次订单状态
                 if trade.orderStatus.status == 'Filled':
                     print(f"订单完全成交: {trade.orderStatus.filled}股{trade.contract.symbol}")
                     return trade  # 完全成交，返回trade
@@ -191,12 +223,15 @@ class PositionManager:
         entry_price = bars.iloc[-1]["close"]
         amount = self.calculate_open_amount(bars)
         amount = (-1 if direction == "Sold" else 1) * amount
+        
+        print(f"【{current_time}】开仓: {symbol}, 方向： {direction}, 数量： {amount}, 价格: {entry_price}, 预估市值：{amount * entry_price}")
         if self.debug:
             self.debug_open_position(contract, direction, amount, entry_price, current_time)
         else:
             # 在非 debug 模式下调用 IBKR 的开仓 API，异步处理
-            trade_thread = threading.Thread(target=self.ibkr_open_position, args=(contract, amount, current_time))
-            trade_thread.start()
+            # trade_thread = threading.Thread(target=self.ibkr_open_position, args=(contract, amount, current_time))
+            # trade_thread.start()
+            self.ibkr_open_position(contract, amount, current_time)
         
     def structure_exit(self, bars, contract, exit_signal, current_time):
         symbol = contract.symbol
@@ -208,8 +243,17 @@ class PositionManager:
         if self.debug:
             self.debug_close_position(contract, current_time, entry_price, exit_price, exit_signal)
         else:
-            trade_thread = threading.Thread(target=self.ibkr_close_position, args=(contract, amount, current_time))
-            trade_thread.start()
+            self.ibkr_close_position(contract, amount, current_time)
+    
+                        
+    def test_trade(self, bars, contract):
+        # symbol = contract.symbol
+        if self.test_count == 0:
+            self.structure_entry(bars, contract, "底背离", bars.iloc[-1]['date'])
+        
+        self.test_count += 1
+        if self.test_count == 3:
+            self.structure_exit(bars, contract, "MACD反向运行", bars.iloc[-1]['date'])
             
     def update(self, contract, structure, bars, current_time):
         """

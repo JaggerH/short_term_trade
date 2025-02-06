@@ -33,7 +33,7 @@ def fetch_minute_data(contract):
             whatToShow='TRADES',
             useRTH=True
         )
-        if not bars:
+        if not data:
             print(contract.symbol, ' bars is empty')
             try_count += 1
             time.sleep(1)
