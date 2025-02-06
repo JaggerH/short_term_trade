@@ -8,7 +8,7 @@ def load_csv_data(file_path):
 
 # 模拟的等待函数，每2秒触发一次
 def fake_wait_for_next_minute():
-    time.sleep(0.01)
+    time.sleep(0.05)
     
 def fake_fetch_minute_data(contract, csv_data, current_index):
     if current_index < len(csv_data):

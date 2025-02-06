@@ -7,28 +7,37 @@ import pandas as pd
 
 # 连接到 IBKR
 ib = IB()
-ib.connect('127.0.0.1', 7496, clientId=1)
+ib.connect('127.0.0.1', 7497, clientId=1)
 
 # # 定义标的列表
-symbols = [('TSLA', 'NASDAQ'), ('SOXL', 'ARCA'), ('NVDA', 'NASDAQ')]  # 替换为你的标的
+symbols = [('TSLA', 'NASDAQ'), ('SOXL', 'ARCA'), ('NVDA', 'NASDAQ'), ('PLTR', 'NASDAQ'), ('AVGO', 'NASDAQ')]  # 替换为你的标的
 contracts = [Stock(symbol, 'SMART', 'USD', primaryExchange=exchange) for symbol, exchange in symbols]
         
-pm = PositionManager(ib, debug=True)
+pm = PositionManager(ib, debug=False)
 
 # 定义获取行情的函数
 def fetch_minute_data(contract):
     end_time = ''
     duration = '1 D'
     bar_size = '1 min'
-    data = ib.reqHistoricalData(
-        contract,
-        endDateTime=end_time,
-        durationStr=duration,
-        barSizeSetting=bar_size,
-        whatToShow='TRADES',
-        useRTH=True
-    )
-    return data
+    try_count = 3
+    while True:
+        data = ib.reqHistoricalData(
+            contract,
+            endDateTime=end_time,
+            durationStr=duration,
+            barSizeSetting=bar_size,
+            whatToShow='TRADES',
+            useRTH=True
+        )
+        if not bars:
+            print(contract.symbol, ' bars is empty')
+            try_count += 1
+            time.sleep(1)
+            if try_count >= 4:
+                raise "尝试3次数据获取均为空"
+        else:
+            return data
 
 # 等待到下一个完整的 01 秒
 def wait_for_next_minute():
@@ -47,12 +56,11 @@ try:
         # 获取数据
         for contract in contracts:
             bars = fetch_minute_data(contract)
-            if not bars:
-                print(contract.symbol, ' bars is empty')
+
             bars = pd.DataFrame(bars)
             structure = Structure()
             current_time = bars.iloc[-1]['date']
-            pm.update(contract.symbol, structure, bars, current_time)
+            pm.update(contract, structure, bars, current_time)
 except KeyboardInterrupt:
     print("程序已停止")
 finally:
