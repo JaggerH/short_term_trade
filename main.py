@@ -4,13 +4,16 @@ from datetime import datetime, timedelta
 from PositionManager import PositionManager
 from Structure import Structure
 import pandas as pd
+import yaml
 
 # 连接到 IBKR
 ib = IB()
 ib.connect('127.0.0.1', 7497, clientId=1)
 
-# # 定义标的列表
-symbols = [('TSLA', 'NASDAQ'), ('SOXL', 'ARCA'), ('NVDA', 'NASDAQ'), ('PLTR', 'NASDAQ'), ('AVGO', 'NASDAQ')]  # 替换为你的标的
+# 定义标的列表
+# symbols = [('TSLA', 'NASDAQ'), ('SOXL', 'ARCA'), ('NVDA', 'NASDAQ'), ('PLTR', 'NASDAQ'), ('AVGO', 'NASDAQ')]  # 替换为你的标的
+with open("config.yml", "r", encoding="utf-8") as file:
+    symbols = yaml.safe_load(file)["symbols"]
 contracts = [Stock(symbol, 'SMART', 'USD', primaryExchange=exchange) for symbol, exchange in symbols]
         
 pm = PositionManager(ib, debug=False)
@@ -56,7 +59,6 @@ try:
         # 获取数据
         for contract in contracts:
             bars = fetch_minute_data(contract)
-
             bars = pd.DataFrame(bars)
             structure = Structure()
             current_time = bars.iloc[-1]['date']

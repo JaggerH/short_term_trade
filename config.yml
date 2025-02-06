@@ -1,0 +1,17 @@
+symbols:
+  # The SEVEN
+  - ['TSLA',  'NASDAQ']
+  - ['NVDA',  'NASDAQ']
+  - ['AAPL',  'NASDAQ']
+  - ['AMZN',  'NASDAQ']
+  - ['GOOGL', 'NASDAQ']
+  - ['META',  'NASDAQ']
+  - ['MSFT',  'NASDAQ']
+  
+  - ['AVGO',  'NASDAQ']
+  - ['PLTR',  'NASDAQ']
+  - ['IBKR',  'NASDAQ']
+
+  - ['QQQ',   'NASDAQ']
+  - ['SOXL',  'ARCA']
+

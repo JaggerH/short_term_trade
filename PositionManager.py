@@ -74,11 +74,14 @@ class PositionManager:
         """
         self.positions = [pos for pos in self.positions if pos["symbol"] != symbol]
 
-    def add_trade(self, trade, date):
+    def add_trade(self, trade):
         self.trades.append(trade)
         
     def remove_trade(self, contract, amount):
         trade = self.find_trade(contract, amount)
+        self.trades.remove(trade)
+        
+    def remove_trade(self, trade):
         self.trades.remove(trade)
         
     def find_trade(self, contract, amount):
