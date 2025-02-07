@@ -2,8 +2,8 @@ from ib_insync import *
 from utils import volatility
 import pandas as pd
 import time
-import threading
 
+ACCOUNT_REQUEST_INTERVAL = 60
 class PositionManager:
     """
         debug模式下不需要ibkr参与计算
@@ -16,7 +16,27 @@ class PositionManager:
         self.positions = []  # 存储多个合约的仓位信息
         self.trade_log = []  # 交易记录列表
         self.trades    = []  # 记录下单中的交易
-        self.ib.orderStatusEvent += self.on_order_status
+        self.account_request_time = None # 上次request_account_summary的事件
+        if ib:
+            self.ib.orderStatusEvent += self.on_order_status
+            self.ib.accountSummaryEvent += self.on_account_summary
+            self.request_account_summary()
+        else:
+            self.net_liquidation = 1000000
+            self.available_funds = 1000000
+            
+    def on_account_summary(self, account_summary):
+        # AccountValue(account='All', tag='RealCurrency', value='BASE', currency='BASE', modelCode='')
+        if account_summary.tag == "NetLiquidation": self.net_liquidation = float(account_summary.value)
+        if account_summary.tag == "AvailableFunds": self.available_funds = float(account_summary.value)
+
+    def request_account_summary(self):
+        # 请求账户摘要信息
+        if self.ib:
+            current_time = time.time()  # 获取当前时间戳
+            if self.account_request_time is not None and current_time - self.account_request_time < ACCOUNT_REQUEST_INTERVAL: return None
+            self.ib.reqAccountSummaryAsync()
+            self.account_request_time = current_time
         
     def find_position(self, symbol):
         return next((item for item in self.positions if item.get("symbol") == symbol), None)
@@ -27,32 +47,18 @@ class PositionManager:
         """
         return any(position["symbol"] == symbol for position in self.positions)
 
-    def get_available_funds(self):
-        if self.debug:
-            return 1000000, 1000000
-        account_summary = self.ib.accountSummary()
-        df = pd.DataFrame(account_summary)
-
-        result = df.set_index('tag')['value'].to_dict()
-
-        net_liquidation = result.get('NetLiquidation', 0) # 账户净资产
-        available_funds = result.get('AvailableFunds', 0) # 可用资金
-        net_liquidation = float(net_liquidation)
-        available_funds = float(available_funds)
-        
-        return net_liquidation, available_funds
-    
     def calculate_open_amount(self, bars):
-        net_liquidation, available_funds = self.get_available_funds()
-        if net_liquidation is None or available_funds is None:
+        # net_liquidation, available_funds = self.get_available_funds()
+        self.request_account_summary()
+        if self.net_liquidation is None or self.available_funds is None:
             print("PositionManager.calculate_open_amount net_liquidation or available_funds is None")
             return 0
         
         vol = volatility(bars['close'])
         # target_market_value = net_liquidation * 0.1 * vol * 1000
         # print(f'波动率:{vol}，目标市值:{target_market_value}')
-        target_market_value = net_liquidation * 0.1
-        if target_market_value > available_funds: return 0
+        target_market_value = self.net_liquidation * 0.1
+        if target_market_value > self.available_funds: return 0
         
         open_amount = target_market_value / bars.iloc[-1]['close']
         open_amount = round(open_amount / 10) * 10  # 调整为 10 的倍数
@@ -244,7 +250,6 @@ class PositionManager:
             self.debug_close_position(contract, current_time, entry_price, exit_price, exit_signal)
         else:
             self.ibkr_close_position(contract, amount, current_time)
-    
                         
     def test_trade(self, bars, contract):
         # symbol = contract.symbol
@@ -285,13 +290,16 @@ class PositionManager:
                 if new_open_amount * exit_amount < 0:
                     raise("同时收到开仓和平仓方向，且方向不一致")
                 else:
-                    self.close_position(contract, current_time)
-                    exit_price = bars.iloc[-1]['close']
-                    pnl = (exit_price - entry_price) * amount
-                    print(f"【{current_time}】平仓: {symbol}, 价格: {exit_price}, 平仓原因：{exit_signal}, 浮动盈亏：{pnl}")
+                    # self.close_position(contract, current_time)
+                    # exit_price = bars.iloc[-1]['close']
+                    # pnl = (exit_price - entry_price) * amount
+                    # print(f"【{current_time}】平仓: {symbol}, 价格: {exit_price}, 平仓原因：{exit_signal}, 浮动盈亏：{pnl}")
                     
-                    entry_price = bars.iloc[-1]["close"]
-                    amount = self.calculate_open_amount(bars)
-                    amount = (-1 if direction == "Sold" else 1) * amount
-                    self.open_position(contract, direction, amount, entry_price, current_time)
-                    print(f"【{current_time}】开仓: {symbol}, 方向： {direction}, 数量： {amount}, 价格: {entry_price}, 预估市值：{amount * entry_price}")
+                    # entry_price = bars.iloc[-1]["close"]
+                    # amount = self.calculate_open_amount(bars)
+                    # amount = (-1 if direction == "Sold" else 1) * amount
+                    # self.open_position(contract, direction, amount, entry_price, current_time)
+                    # print(f"【{current_time}】开仓: {symbol}, 方向： {direction}, 数量： {amount}, 价格: {entry_price}, 预估市值：{amount * entry_price}")
+                    self.structure_exit(bars, contract, exit_signal, current_time)
+                    self.structure_entry(bars, contract, signal, current_time)
+                    
