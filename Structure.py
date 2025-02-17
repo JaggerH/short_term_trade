@@ -165,6 +165,7 @@ def compare_block(block_1, block_2):
         block_1: instanceof(pd.DataFrame) 要比较的对象 即前一个block
         block_2: instanceof(pd.DataFrame) 一般是当前block
     """
+    # 顶背离时DIF值需要在zero axis上方
     if block_2['block_type'].sum() >= 1 and block_2['DIF'].sum() > 0: # 顶背离
         block_1_close   = block_1['close'].max()
         block_1_diff    = block_1['DIF'].max()

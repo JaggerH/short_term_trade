@@ -1,7 +1,6 @@
 from ib_insync import *
-from utils import volatility
+from utils import volatility, is_within_30_minutes_of_close
 import pandas as pd
-import time
 
 ACCOUNT_REQUEST_INTERVAL = 60
 class PositionManager:
@@ -20,25 +19,82 @@ class PositionManager:
         if ib:
             self.ib.orderStatusEvent += self.on_order_status
             self.ib.accountSummaryEvent += self.on_account_summary
-            self.request_account_summary()
+            self.ib.reqAccountSummaryAsync()
         else:
             self.net_liquidation = 1000000
             self.available_funds = 1000000
         
+        if not self.debug:
+            self.restore()
+            
         self.test_count = 0
         
     def on_account_summary(self, account_summary):
         # AccountValue(account='All', tag='RealCurrency', value='BASE', currency='BASE', modelCode='')
         if account_summary.tag == "NetLiquidation": self.net_liquidation = float(account_summary.value)
         if account_summary.tag == "AvailableFunds": self.available_funds = float(account_summary.value)
+        
+    def on_order_status(self, trade):
+        """
+        处理订单状态更新的回调函数
+        """
+        _trade = self.find_trade_by_order_id(trade.order.orderId)
+        if _trade: _trade["callback"](self, trade)
+        
+    def save(self):
+        import copy
+        import dill
+        import yaml
+        import redis
 
-    def request_account_summary(self):
-        # 请求账户摘要信息
-        if self.ib:
-            current_time = time.time()  # 获取当前时间戳
-            if self.account_request_time is not None and current_time - self.account_request_time < ACCOUNT_REQUEST_INTERVAL: return None
-            self.ib.reqAccountSummaryAsync()
-            self.account_request_time = current_time
+        # 加载配置
+        with open("config.yml", "r") as file:
+            config = yaml.safe_load(file)
+
+        redis_config = config.get("redis", {})
+        redis_client = redis.Redis(**redis_config)
+            
+        data = {
+            "positions": self.positions,
+            "trade_log": self.trade_log,
+            "trades": self.trades
+        }
+        redis_client.set("position_manager_data", dill.dumps(data))
+        
+    def restore(self):
+        import dill
+        import yaml
+        import redis
+
+        # 加载配置
+        with open("config.yml", "r") as file:
+            config = yaml.safe_load(file)
+
+        redis_config = config.get("redis", {})
+        redis_client = redis.Redis(**redis_config)
+        
+        data = redis_client.get("position_manager_data")
+        if data:
+            data = dill.loads(data)
+            self.positions  = data.get("positions", [])
+            self.trade_log  = data.get("trade_log", [])
+            self.trades     = data.get("trades", [])
+            
+            complete_orders = self.ib.reqCompletedOrders(True)
+            for trade in complete_orders:
+                trade = self.find_trade_by_order_id(trade.order.orderId)
+                if trade: trade["callback"](self, trade)
+            
+    def clear_redis(self):
+        import yaml
+        import redis
+
+        # 加载配置
+        with open("config.yml", "r") as file:
+            config = yaml.safe_load(file)
+        redis_config = config.get("redis", {})
+        redis_client = redis.Redis(**redis_config)
+        redis_client.delete("position_manager_data")
         
     def find_position(self, symbol):
         return next((item for item in self.positions if item.get("symbol") == symbol), None)
@@ -56,6 +112,7 @@ class PositionManager:
         self.positions.append({
             "symbol": symbol,
             "price": entry_price,
+            "strategy": "structure",
             "amount": amount,
             "date": entry_time
         })
@@ -68,7 +125,6 @@ class PositionManager:
 
     def calculate_open_amount(self, bars):
         # net_liquidation, available_funds = self.get_available_funds()
-        self.request_account_summary()
         if self.net_liquidation is None or self.available_funds is None:
             print("PositionManager.calculate_open_amount net_liquidation or available_funds is None")
             return 0
@@ -83,7 +139,7 @@ class PositionManager:
         open_amount = round(open_amount / 10) * 10  # 调整为 10 的倍数
         return int(open_amount)
     
-    def find_structure_open_trade(self, contract, amount, block_id):
+    def find_structure_open_trade(self, contract, amount):
         """
             Structure开仓交易的数量是变动的 不能用作查找开仓交易的标准
             比如在两个临近时点 分别触发开仓信号 但是开仓数量因为净值的波动会发生变化 无法查找到对应交易会导致重复开仓
@@ -102,11 +158,10 @@ class PositionManager:
         action = 'BUY' if amount > 0 else 'SELL'
         amount = abs(amount)
         is_match = lambda item: (
+            item["type"] == "开仓" and
             item["trade"].contract == contract and
-            item["trade"].order.action == action and
-            item["trade"].order.totalQuantity == amount and
             item["strategy"] == "structure" and
-            item["block_id"] == block_id
+            item["trade"].order.action == action
         )
         return next((item for item in self.trades if is_match(item)), None)
     
@@ -123,7 +178,14 @@ class PositionManager:
         """
         action = 'BUY' if amount > 0 else 'SELL'
         amount = abs(amount)
-        return next((item for item in self.trades if item["trade"].contract == contract and item["trade"].order.action == action and item["trade"].order.totalQuantity == amount), None)
+        is_match = lambda item: (
+            item["type"] == "平仓" and
+            item["trade"].contract == contract and
+            item["trade"].order.action == action and
+            item["trade"].order.totalQuantity == amount and
+            item["strategy"] == "structure"
+        )
+        return next((item for item in self.trades if is_match(item)), None)
     
     def find_trade_by_order_id(self, orderId):
         return next((item for item in self.trades if item["trade"].order.orderId == orderId), None)
@@ -161,14 +223,21 @@ class PositionManager:
         self.log_trade(symbol, "开仓", direction, amount, entry_time)  # 记录交易
     
     def ibkr_open_position(self, contract, amount, entry_time, redundant_trade_info={}):
-        def callback(trade, entry_time=entry_time):
+        def callback(self, trade, entry_time=entry_time):
             """
             回调函数，处理订单完成后的逻辑
             """
+            direction = 1 if trade.order.action == 'BUY' else -1
             if trade.orderStatus.status == 'Filled':
                 print(f"订单完全成交: {trade.orderStatus.filled}股, 平均成交价: {trade.orderStatus.avgFillPrice}")
-                self.add_position(contract.symbol, trade.orderStatus.avgFillPrice, trade.orderStatus.filled, entry_time)
+                self.add_position(contract.symbol, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, entry_time)
                 self.log_trade(contract.symbol, "开仓", trade.order.action, trade.orderStatus.filled, trade.fills[-1].time)  # 记录交易
+                self.remove_trade_by_order_id(trade.order.orderId)
+            if trade.orderStatus.status == 'Cancelled':
+                print(f"订单已取消，成交: {trade.orderStatus.filled}股, 平均成交价: {trade.orderStatus.avgFillPrice}")
+                if trade.orderStatus.filled != 0:
+                    self.add_position(contract.symbol, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, entry_time)
+                    self.log_trade(contract.symbol, "开仓", trade.order.action, trade.orderStatus.filled, trade.fills[-1].time)  # 记录交易    
                 self.remove_trade_by_order_id(trade.order.orderId)
                 
         trade = self.ibkr_trade(contract, amount)
@@ -193,15 +262,16 @@ class PositionManager:
     def ibkr_close_position(self, contract, amount, exit_time, redundant_trade_info={}):
         amount = -1 * amount
         
-        def callback(trade):
+        def callback(self, trade):
+            direction = 1 if trade.order.action == 'BUY' else -1
             if trade.orderStatus.status == 'Filled':
-                self.log_trade(contract.symbol, "平仓",  trade.order.action, trade.orderStatus.filled, trade.fills[-1].time)  # 记录交易
+                self.log_trade(contract.symbol, "平仓",  trade.order.action, direction * trade.orderStatus.filled, trade.fills[-1].time)  # 记录交易
                 position = self.find_position(contract.symbol)    
                 exit_price = trade.orderStatus.avgFillPrice
                 entry_price = position["price"]    
                 pnl = (exit_price - entry_price) * amount
                 self.remove_position(contract.symbol)
-                print(f"【{trade.fills[-1].time}】平仓: {contract.symbol}, 价格: {trade.orderStatus.filled}, 浮动盈亏：{pnl}")
+                print(f"【{trade.fills[-1].time}】平仓: {contract.symbol}, 价格: {trade.orderStatus.avgFillPrice}, 浮动盈亏：{pnl}")
                 
                 self.remove_trade_by_order_id(trade.order.orderId)
             
@@ -215,16 +285,9 @@ class PositionManager:
         direction = 'BUY' if amount > 0 else 'SELL'
         print(contract, direction, amount)
         order = MarketOrder(direction, abs(amount))
-        
+        order.outsideRth = True  # 允许在非常规交易时段执行
         trade = self.ib.placeOrder(contract, order)
         return trade
-
-    def on_order_status(self, trade):
-        """
-        处理订单状态更新的回调函数
-        """
-        _trade = self.find_trade_by_order_id(trade.order.orderId)
-        if _trade: _trade["callback"](trade)
             
     def structure_entry(self, bars, contract, signal, block_id):
         """
@@ -244,7 +307,7 @@ class PositionManager:
             self.debug_open_position(contract, direction, amount, entry_price, current_time)
         else:
             # 在非 debug 模式下调用 IBKR 的开仓 API，异步处理
-            if not self.find_structure_open_trade(contract, amount, block_id):
+            if not self.find_structure_open_trade(contract, amount):
                 self.ibkr_open_position(contract, amount, current_time, {"strategy": "structure", "block_id": block_id})
         
     def structure_exit(self, bars, contract, exit_signal):
@@ -262,14 +325,13 @@ class PositionManager:
                 self.ibkr_close_position(contract, amount, current_time, {"strategy": "structure"})
                         
     def test_trade(self, bars, contract):
-        # symbol = contract.symbol
         if self.test_count == 0:
             self.structure_entry(bars, contract, "底背离", 5)
         
         self.test_count += 1
         if self.test_count == 3:
             self.structure_exit(bars, contract, "MACD反向运行")
-            
+    
     def update(self, contract, structure, bars, current_time):
         """
         更新仓位状态：根据是否有仓位执行开仓或平仓逻辑
@@ -279,7 +341,7 @@ class PositionManager:
         block_id = structure.data['block_id'].max()
         
         if not self.has_position(symbol):
-            if signal:
+            if signal and not is_within_30_minutes_of_close(bars):
                 self.structure_entry(bars, contract, signal, block_id)
         else:
             position = self.find_position(symbol)
@@ -302,16 +364,7 @@ class PositionManager:
                 if new_open_amount * exit_amount < 0:
                     raise("同时收到开仓和平仓方向，且方向不一致")
                 else:
-                    # self.close_position(contract, current_time)
-                    # exit_price = bars.iloc[-1]['close']
-                    # pnl = (exit_price - entry_price) * amount
-                    # print(f"【{current_time}】平仓: {symbol}, 价格: {exit_price}, 平仓原因：{exit_signal}, 浮动盈亏：{pnl}")
-                    
-                    # entry_price = bars.iloc[-1]["close"]
-                    # amount = self.calculate_open_amount(bars)
-                    # amount = (-1 if direction == "Sold" else 1) * amount
-                    # self.open_position(contract, direction, amount, entry_price, current_time)
-                    # print(f"【{current_time}】开仓: {symbol}, 方向： {direction}, 数量： {amount}, 价格: {entry_price}, 预估市值：{amount * entry_price}")
-                    self.structure_exit(bars, contract, exit_signal, current_time)
+                    print("【特殊】平仓+开仓")
+                    self.structure_exit(bars, contract, exit_signal)
                     self.structure_entry(bars, contract, signal, current_time)
                     

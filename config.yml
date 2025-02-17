@@ -11,7 +11,13 @@ symbols:
   - ['AVGO',  'NASDAQ']
   - ['PLTR',  'NASDAQ']
   - ['IBKR',  'NASDAQ']
+  - ['VST',  'NASDAQ']
 
   - ['QQQ',   'NASDAQ']
   - ['SOXL',  'ARCA']
 
+redis:
+  host: "localhost"
+  port: 6379
+  password: verysecret
+  db: 0

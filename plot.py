@@ -135,3 +135,44 @@ def plot_debug_structure(df, trade_history):
 
     # 显示图像
     plt.show()
+    
+def plot_debug_rbreak(df, trade_history, rbreak):
+    """
+    debug structure
+    :params
+    df: quote of stock
+    trade_history: trade signals
+    """
+    df = prepare_trade_history(df, trade_history)
+    df, macd_panel = generate_macd_panel(df)
+    df, vwap_panel = generate_vwap_panel(df)
+    
+    df['bBreak'] = rbreak.bBreak
+    df['sSetup'] = rbreak.sSetup
+    df['sEnter'] = rbreak.sEnter
+    df['bEnter'] = rbreak.bEnter
+    df['bSetup'] = rbreak.bSetup
+    df['sBreak'] = rbreak.sBreak
+    rbreak_lines = [
+        mpf.make_addplot(df['bBreak'], panel=0, color='purple', linestyle='dashed', alpha=0.7, label='bBreak'),
+        mpf.make_addplot(df['sSetup'], panel=0, color='red', linestyle='dashed', alpha=0.7, label='sSetup'),
+        mpf.make_addplot(df['sEnter'], panel=0, color='blue', linestyle='dashed', alpha=0.7, label='sEnter'),
+        mpf.make_addplot(df['bEnter'], panel=0, color='green', linestyle='dashed', alpha=0.7, label='bEnter'),
+        mpf.make_addplot(df['bSetup'], panel=0, color='orange', linestyle='dashed', alpha=0.7, label='bSetup'),
+        mpf.make_addplot(df['sBreak'], panel=0, color='black', linestyle='dashed', alpha=0.7, label='sBreak'),
+    ]
+    
+    panels = macd_panel + vwap_panel + rbreak_lines
+    
+    fig, axes = mpf.plot(df, type='line', ylabel='Price', 
+            addplot=panels,
+            panel_ratios=(3, 1),  # 设置主图和副图的比例
+            volume=False,         # 不显示成交量
+            figsize=(10, 6),
+            returnfig=True)       # 返回figure和axes对象
+
+    mark_bs_point(df, axes)
+    modify_macd_range(df, axes) # 修正macd的range, 使极值绝对值相等
+
+    # 显示图像
+    plt.show()
