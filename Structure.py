@@ -1,7 +1,8 @@
-import talib
 import pandas as pd
+
+from utils import macd, is_within_30_minutes_of_close
+
 from datetime import timedelta
-from utils import macd
 from sklearn.preprocessing import QuantileTransformer
 
 ANGLE = 0.015
@@ -101,6 +102,44 @@ class Structure:
             return "平仓信号：持有时间超限"
 
         return False  # 无平仓信号
+    
+    # ---------------------------------------
+    #           以下部分会调用交易接口
+    # ---------------------------------------    
+    def find_position(self, contract, pm):
+        is_match = lambda item: (
+            item["contract"] == contract and
+            item["strategy"] == "Structure"
+        )
+        return pm.find_position(is_match)
+        
+    def update(self, contract, bars, pm):
+        signal = self.cal(bars)
+        
+        if not self.find_position(contract, pm):
+            if signal and not is_within_30_minutes_of_close(bars):
+                direction = 1 if signal == "底背离" else -1
+                amount = direction * pm.calculate_open_amount(bars)
+                pm.open_position(contract, "Structure", amount, bars)
+        else:
+            position = self.find_position(contract, pm)
+            # 如果有仓位，检查是否发出平仓信号
+            exit_signal = self.cal_exit_signal(bars, position["amount"], position["price"], position["date"])
+            
+            if exit_signal and not signal:
+                pm.close_position(contract, "Structure", bars)
+                
+            if exit_signal and signal:
+                exit_amount = position["amount"] * -1 # 这是退出的数量及方向
+                
+                direction = 1 if signal == "底背离" else -1
+                open_amount = direction * pm.calculate_open_amount(bars)
+                if open_amount * exit_amount < 0:
+                    raise(f"【{bars.iloc[-1]['date']}】【{contract.symbol}】同时收到开仓和平仓信号，且方向不一致")
+                else:
+                    print(f"【{bars.iloc[-1]['date']}】【{contract.symbol}】平仓+开仓")
+                    pm.close_position(contract, "Structure", bars)
+                    pm.open_position(contract, "Structure", amount, bars)
     
 def get_prev_blockID(df, block_id):
     """

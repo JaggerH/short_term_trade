@@ -11,12 +11,13 @@ class PositionManager:
         计算过程仅采用提供的行情数据
         成交模式改为即时成交
     """
-    def __init__(self, ib, debug=False):
+    def __init__(self, ib, debug=False, config_file="config.yaml"):
         self.ib = ib
         self.debug = debug
         self.positions = []  # 存储多个合约的仓位信息
         self.trade_log = []  # 交易记录列表
         self.trades    = []  # 记录下单中的交易
+        self.config_file = config_file
         if ib:
             self.ib.orderStatusEvent += self.on_order_status
             self.ib.accountSummaryEvent += self.on_account_summary
@@ -40,9 +41,9 @@ class PositionManager:
         if _trade: _trade["callback"](self, trade)
 
     def get_redis(self):
-        if not self._redis:
+        if not hasattr(self, '_redis'):
             # 加载配置
-            with open("config.yml", "r") as file:
+            with open(self.config_file, "r") as file:
                 config = yaml.safe_load(file)
 
             redis_config = config.get("redis", {})
@@ -97,7 +98,7 @@ class PositionManager:
         
     def add_position(self, contract, strategy, price, amount, date):
         self.positions.append({
-            "contract": contract.symbol,
+            "contract": contract,
             "price": price,
             "strategy": strategy,
             "amount": amount,
@@ -152,19 +153,21 @@ class PositionManager:
         trade = self.find_trade(is_match)
         self.remove_trade(trade)
         
-    def log(self, contract, strategy, open_or_close, direction, price, amount, date):
+    def log(self, contract, strategy, open_or_close, direction, price, amount, date, pnl=None):
         """
         记录交易信息
         """
         self.trade_log.append({
+            "date": date,
             "symbol": contract.symbol,
             "strategy": strategy,
             "open_or_close": open_or_close,
             "direction": direction,
             "price": price,
             "amount": amount,
-            "date": date
+            "pnl": pnl
         })
+        print(f'【{date}】【{strategy}】{open_or_close}: {contract.symbol}, 价格: {price}, 数量：{amount}, 浮动盈亏：{pnl}')
 
     def open_position(self, contract, strategy, amount, bars, allow_repeat_order = False):
         if self.debug:
@@ -178,12 +181,13 @@ class PositionManager:
             if not allow_repeat_order and not self.find_trade(is_match):
                 self.ibkr_open_position(contract, strategy, amount, bars.iloc[-1]['date'])
             
-    def debug_open_position(self, contract, direction, amount, price, date):
+    def debug_open_position(self, contract, strategy, amount, price, date):
         """
         开仓操作：修改仓位 + 调用 IBKR API（如果不处于 debug 模式）
         """
-        self.add_position(contract, price, amount, date)
-        self.log(contract, "开仓", direction, amount, date)  # 记录交易
+        direction = 'BUY' if amount > 0 else 'SELL'
+        self.add_position(contract, strategy, price, amount, date)
+        self.log(contract, strategy, "开仓", direction, price, amount, date)  # 记录交易
     
     def ibkr_open_position(self, contract, strategy, amount, date, redundant_trade_info={}):
         def callback(self, trade, strategy=strategy):
@@ -223,11 +227,10 @@ class PositionManager:
         position = self.find_position(is_match)
         close_amount = -1 * position["amount"]
         direction = "SELL" if close_amount < 0 else "BUY" # 因为要做反向操作
+        pnl = (bars.iloc[-1]["close"] - position["price"]) * position["amount"]
         
         self.remove_position(position)
-        self.log(contract, strategy, "平仓", direction, bars.iloc[-1]["close"], close_amount, bars.iloc[-1]["date"])  # 记录交易
-        pnl = (bars.iloc[-1]["close"] - position["price"]) * close_amount
-        print(f"【{bars.iloc[-1]["date"]}】平仓: {contract.symbol}, 价格: {bars.iloc[-1]["close"]}, 浮动盈亏：{pnl}")
+        self.log(contract, strategy, "平仓", direction, bars.iloc[-1]["close"], close_amount, bars.iloc[-1]["date"], pnl)  # 记录交易
            
     def ibkr_close_position(self, contract, strategy, bars):
         is_match = lambda item: ( item["contract"] == contract and item["strategy"] == strategy )
@@ -242,7 +245,7 @@ class PositionManager:
                 pnl = (trade.orderStatus.avgFillPrice - position["price"]) * trade.orderStatus.filled
                 
                 self.remove_position(position)
-                self.log(contract, strategy, "平仓", trade.order.action, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time)  # 记录交易
+                self.log(contract, strategy, "平仓", trade.order.action, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time, pnl)  # 记录交易
                 print(f"【{trade.fills[-1].time}】平仓: {contract.symbol}, 价格: {trade.orderStatus.avgFillPrice}, 浮动盈亏：{pnl}")
                 self.remove_trade_by_order_id(trade.order.orderId)
 
@@ -257,3 +260,19 @@ class PositionManager:
         order.outsideRth = True  # 允许在非常规交易时段执行
         trade = self.ib.placeOrder(contract, order)
         return trade
+    
+    def calculate_open_amount(self, bars):
+        # net_liquidation, available_funds = self.get_available_funds()
+        if self.net_liquidation is None or self.available_funds is None:
+            print("PositionManager.calculate_open_amount net_liquidation or available_funds is None")
+            return 0
+        
+        # vol = volatility(bars['close'])
+        # target_market_value = net_liquidation * 0.1 * vol * 1000
+        # print(f'波动率:{vol}，目标市值:{target_market_value}')
+        target_market_value = self.net_liquidation * 0.1
+        if target_market_value > self.available_funds: return 0
+        
+        open_amount = target_market_value / bars.iloc[-1]['close']
+        open_amount = round(open_amount / 10) * 10  # 调整为 10 的倍数
+        return int(open_amount)
