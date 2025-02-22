@@ -1,26 +1,33 @@
 from ib_insync import *
 
+import pandas as pd
 import dill
 import yaml
 import redis
+import time
 
 ACCOUNT_REQUEST_INTERVAL = 60
+TEST_COMMISSION_PERCENT = 0.00008 # 测试手续费设置
+SLIPPAGE = 0.002 # 滑点
+
 class PositionManager:
     """
         debug模式下不需要ibkr参与计算
         计算过程仅采用提供的行情数据
         成交模式改为即时成交
     """
-    def __init__(self, ib, debug=False, config_file="config.yaml"):
+    def __init__(self, ib, strategy, debug=False, config_file="config.yaml"):
         self.ib = ib
+        self.strategy = strategy # 用在存储策略
         self.debug = debug
         self.positions = []  # 存储多个合约的仓位信息
         self.trade_log = []  # 交易记录列表
         self.trades    = []  # 记录下单中的交易
         self.config_file = config_file
         if ib:
-            self.ib.orderStatusEvent += self.on_order_status
+            # self.ib.orderStatusEvent += self.on_order_status
             self.ib.accountSummaryEvent += self.on_account_summary
+            self.ib.commissionReportEvent += self.on_commission_report
             self.ib.reqAccountSummaryAsync()
         else:
             self.net_liquidation = 1000000
@@ -40,6 +47,19 @@ class PositionManager:
         _trade = self.find_trade_by_order_id(trade.order.orderId)
         if _trade: _trade["callback"](self, trade)
 
+    def on_commission_report(self, trade, fill, commissionReport):
+        """
+        处理佣金报告
+        """
+        # print(f"Commission Report Received")
+        # print('Trade 1', trade)
+        # print('Fill 1', fill)
+        # print('commissionReport 1', commissionReport)
+        # 在这里可以根据需要处理佣金和盈亏数据
+        # 例如，你可以将它们存储到数据库或进一步计算
+        _trade = self.find_trade_by_order_id(trade.order.orderId)
+        if _trade: _trade["callback"](self, trade)
+        
     def get_redis(self):
         if not hasattr(self, '_redis'):
             # 加载配置
@@ -57,11 +77,11 @@ class PositionManager:
             "trade_log": self.trade_log,
             "trades": self.trades
         }
-        redis_client.set("position_manager_data", dill.dumps(data))
+        redis_client.set(f"{self.strategy}_position_manager", dill.dumps(data))
         
     def restore(self):
         redis_client = self.get_redis()
-        data = redis_client.get("position_manager_data")
+        data = redis_client.get(f"{self.strategy}_position_manager")
         if data:
             data = dill.loads(data)
             self.positions  = data.get("positions", [])
@@ -75,7 +95,7 @@ class PositionManager:
             
     def clear_redis(self):
         redis_client = self.get_redis()
-        redis_client.delete("position_manager_data")
+        redis_client.delete(f"{self.strategy}_position_manager")
         
     def find_position(self, is_match):
         """
@@ -153,7 +173,7 @@ class PositionManager:
         trade = self.find_trade(is_match)
         self.remove_trade(trade)
         
-    def log(self, contract, strategy, open_or_close, direction, price, amount, date, pnl=None):
+    def log(self, contract, strategy, open_or_close, direction, price, amount, date, commission, pnl=None):
         """
         记录交易信息
         """
@@ -165,9 +185,11 @@ class PositionManager:
             "direction": direction,
             "price": price,
             "amount": amount,
+            "commission": commission,
             "pnl": pnl
         })
         print(f'【{date}】【{strategy}】{open_or_close}: {contract.symbol}, 价格: {price}, 数量：{amount}, 浮动盈亏：{pnl}')
+        if not self.debug: self.save()
 
     def open_position(self, contract, strategy, amount, bars, allow_repeat_order = False):
         if self.debug:
@@ -187,7 +209,8 @@ class PositionManager:
         """
         direction = 'BUY' if amount > 0 else 'SELL'
         self.add_position(contract, strategy, price, amount, date)
-        self.log(contract, strategy, "开仓", direction, price, amount, date)  # 记录交易
+        commission = abs(amount * price) * TEST_COMMISSION_PERCENT
+        self.log(contract, strategy, "开仓", direction, price, amount, date, commission)  # 记录交易
     
     def ibkr_open_position(self, contract, strategy, amount, date, redundant_trade_info={}):
         def callback(self, trade, strategy=strategy):
@@ -195,67 +218,55 @@ class PositionManager:
             回调函数，处理订单完成后的逻辑
             """
             direction = 1 if trade.order.action == 'BUY' else -1
-            if trade.orderStatus.status == 'Filled':
-                print(f"订单完全成交: {trade.orderStatus.filled}股, 平均成交价: {trade.orderStatus.avgFillPrice}")
-                self.add_position(contract, strategy, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time)
-                self.log(contract, strategy, "开仓", trade.order.action, trade.orderStatus.avgFillPrice, trade.orderStatus.filled, trade.fills[-1].time)  # 记录交易
-                self.remove_trade_by_order_id(trade.order.orderId)
-            if trade.orderStatus.status == 'Cancelled':
-                print(f"订单已取消，成交: {trade.orderStatus.filled}股, 平均成交价: {trade.orderStatus.avgFillPrice}")
+            if trade.orderStatus.status in ['Filled', 'Cancelled']:
+                commission, pnl = self.get_commission_and_pnl_from_fills(trade)
                 if trade.orderStatus.filled != 0:
                     self.add_position(contract, strategy, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time)
-                    self.log(contract, strategy, "开仓", trade.order.action, trade.orderStatus.avgFillPrice, trade.orderStatus.filled, trade.fills[-1].time)  # 记录交易    
+                    self.log(contract, strategy, "开仓", trade.order.action, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time, commission)  # 记录交易    
                 self.remove_trade_by_order_id(trade.order.orderId)
                 
         trade = self.ibkr_trade(contract, amount)
         self.add_trade(trade, strategy, "开仓", date, callback)
     
-    def close_position(self, contract, strategy, bars):
+    def close_position(self, position, bars):
         if self.debug:
-            self.debug_close_position(contract, strategy, bars)
+            self.debug_close_position(position, bars)
         else:
             is_match = lambda item: (
-                item["trade"].contract == contract and
-                item["strategy"] == strategy and
+                item["trade"].contract == position["contract"] and
+                item["strategy"] == position["strategy"] and
                 item["open_or_close"] == "平仓"
             )
             if not self.find_trade(is_match):
-                self.ibkr_close_position(contract, strategy)
+                self.ibkr_close_position(position, bars)
 
-    def debug_close_position(self, contract, strategy, bars):
-        is_match = lambda item: ( item["contract"] == contract and item["strategy"] == strategy )
-        position = self.find_position(is_match)
+    def debug_close_position(self, position, bars):
         close_amount = -1 * position["amount"]
         direction = "SELL" if close_amount < 0 else "BUY" # 因为要做反向操作
         pnl = (bars.iloc[-1]["close"] - position["price"]) * position["amount"]
         
         self.remove_position(position)
-        self.log(contract, strategy, "平仓", direction, bars.iloc[-1]["close"], close_amount, bars.iloc[-1]["date"], pnl)  # 记录交易
+        commission = abs(close_amount * bars.iloc[-1]["close"]) * TEST_COMMISSION_PERCENT
+        self.log(position["contract"], position["strategy"], "平仓", direction, bars.iloc[-1]["close"], close_amount, bars.iloc[-1]["date"], commission, pnl)  # 记录交易
            
-    def ibkr_close_position(self, contract, strategy, bars):
-        is_match = lambda item: ( item["contract"] == contract and item["strategy"] == strategy )
-        position = self.find_position(is_match)
+    def ibkr_close_position(self, position, bars):
         close_amount = -1 * position["amount"]
         
-        def callback(self, trade, strategy=strategy):
+        def callback(self, trade, position=position):
             direction = 1 if trade.order.action == 'BUY' else -1
             if trade.orderStatus.status == 'Filled':
-                is_match = lambda item: ( item["contract"] == trade.contract and item["strategy"] == strategy )
-                position = self.find_position(is_match)
-                pnl = (trade.orderStatus.avgFillPrice - position["price"]) * trade.orderStatus.filled
+                commission, pnl = self.get_commission_and_pnl_from_fills(trade)
                 
                 self.remove_position(position)
-                self.log(contract, strategy, "平仓", trade.order.action, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time, pnl)  # 记录交易
-                print(f"【{trade.fills[-1].time}】平仓: {contract.symbol}, 价格: {trade.orderStatus.avgFillPrice}, 浮动盈亏：{pnl}")
+                self.log(position["contract"], position["strategy"], "平仓", trade.order.action, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time, commission, pnl)  # 记录交易
                 self.remove_trade_by_order_id(trade.order.orderId)
 
-        trade = self.ibkr_trade(contract, close_amount)
-        self.add_trade(trade, strategy, "平仓", bars.iloc[-1]["date"], callback)
+        trade = self.ibkr_trade(position["contract"], close_amount)
+        self.add_trade(trade, position["strategy"], "平仓", bars.iloc[-1]["date"], callback)
         
     def ibkr_trade(self, contract, amount):
         assert amount != 0
         direction = 'BUY' if amount > 0 else 'SELL'
-        print(contract, direction, amount)
         order = MarketOrder(direction, abs(amount))
         order.outsideRth = True  # 允许在非常规交易时段执行
         trade = self.ib.placeOrder(contract, order)
@@ -276,3 +287,21 @@ class PositionManager:
         open_amount = target_market_value / bars.iloc[-1]['close']
         open_amount = round(open_amount / 10) * 10  # 调整为 10 的倍数
         return int(open_amount)
+    
+    def get_commission_and_pnl_from_fills(self, trade):
+        """
+        df be like:
+            execId	                commission	currency	realizedPNL	yield_	yieldRedemptionDate
+        0	00025b46.67b93a1f.01.01	1.0035	    USD	        -4.959198	0.0	    0
+        1	00025b46.67b93a20.01.01	0.0035	    USD	        -3.959198	0.0	    0
+        2	00025b46.67b93a21.01.01	1.0070	    USD	        -8.918396	0.0	    0
+        3	00025b46.67b93a29.01.01	0.5035	    USD	        -4.459198	0.0	    0
+        4	00025b46.67b93a2e.01.01	0.5035	    USD	        -4.459198	0.0	    0
+        5	00025b46.67b93a2f.01.01	0.2014	    USD	        -1.783679	0.0	    0
+        """
+        commissionReports = [fill.commissionReport for fill in trade.fills]
+        df = pd.DataFrame(commissionReports)
+        return df["commission"].sum(), df["realizedPNL"].sum()
+    
+
+                        

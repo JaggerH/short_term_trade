@@ -81,7 +81,9 @@ def get_market_close_time(date=None):
         # 如果 date 是 datetime.date 对象
         elif date.__class__.__name__ == 'date':
             # 将 date 转为 datetime 对象，并设置为东部时区
-            date = datetime.combine(date, datetime.min.time()).replace(tzinfo=eastern)
+            # date = datetime.combine(date, datetime.min.time()).replace(tzinfo=eastern)
+            date = datetime.combine(date, datetime.min.time())
+            date = eastern.localize(date)  # 强制将 datetime 设置为东部时间
         # 如果 date 是字符串，尝试解析为日期
         elif isinstance(date, str):
             # 尝试解析 yyyymmdd 格式

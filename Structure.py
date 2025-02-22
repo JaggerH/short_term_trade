@@ -79,7 +79,7 @@ class Structure:
         """
         :params
         bars: IBKR行情数据
-        position_direction: 直接给持仓数量也行,持仓数量大于0即多单,小于0是空单
+        position_direction: 持仓数量,持仓数量大于0即多单,小于0是空单
         """
         assert position_direction != 0, "持仓数量不能为零，结合仓位管理运行"
         if not self.has_prepare_data: self.prepare_data(bars)
@@ -94,7 +94,8 @@ class Structure:
             return "平仓信号：MACD背离方向变化"
 
         # 条件 2: 亏损达到1%
-        if (entry_price - current_price) / entry_price >= max_loss:
+        price_change_pct = (current_price - entry_price) / entry_price
+        if (position_direction > 0 and price_change_pct <= -1 * max_loss) or (position_direction < 0 and price_change_pct >= max_loss):
             return "平仓信号：达到亏损上限"
 
         # 条件 3: 持有时间超过26个周期
@@ -139,7 +140,7 @@ class Structure:
                 else:
                     print(f"【{bars.iloc[-1]['date']}】【{contract.symbol}】平仓+开仓")
                     pm.close_position(contract, "Structure", bars)
-                    pm.open_position(contract, "Structure", amount, bars)
+                    pm.open_position(contract, "Structure", open_amount, bars)
     
 def get_prev_blockID(df, block_id):
     """
