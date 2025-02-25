@@ -19,7 +19,7 @@ class RBreakTradeApp(TradeApp):
             rbreak.update(bars)
             
 if __name__ == "__main__":            
-    structure_ta = StructureTradeApp()
+    structure_ta = StructureTradeApp(port=7497)
     structure_ta.subscribe_to_bars()
     
     # rbreak_ta = RBreakTradeApp()

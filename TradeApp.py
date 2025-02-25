@@ -26,8 +26,9 @@ class TradeApp:
         ta = StructureTradeApp()
         ta.subscribe_to_bars()
     """
-    def __init__(self, config_file="config.yml", debug=False, port=7497, clientId=1):
+    def __init__(self, config_file="config.yml", debug=False, host="127.0.0.1", port=7497, clientId=1, **kwargs):
         self.ib = IB()
+        self.host = host
         self.port = port
         self.clientId = clientId
         
@@ -49,9 +50,9 @@ class TradeApp:
         尝试连接到IBKR，如果连接失败则自动重试。
         """
         try:
-            self.ib.connect('127.0.0.1', self.port, clientId=self.clientId)
+            self.ib.connect(self.host, self.port, clientId=self.clientId)
             self.connected = True
-            print(f"成功连接到IBKR（{self.clientId}）")
+            # print(f"成功连接到IBKR（{self.clientId}）")
         except Exception as e:
             print(f"连接IBKR失败: {e}")
             self.reconnect()
@@ -65,7 +66,7 @@ class TradeApp:
             print(f"等待 {retry_interval} 秒后重试连接...")
             time.sleep(retry_interval)
             try:
-                self.ib.connect('127.0.0.1', self.port, clientId=self.clientId)
+                self.ib.connect(self.host, self.port, clientId=self.clientId)
                 self.connected = True
                 print(f"成功连接到IBKR（{self.clientId}）")
             except Exception as e:

@@ -82,8 +82,7 @@ class Structure:
         position_direction: 持仓数量,持仓数量大于0即多单,小于0是空单
         """
         assert position_direction != 0, "持仓数量不能为零，结合仓位管理运行"
-        if not self.has_prepare_data: self.prepare_data(bars)
-        df = self.data
+        df = self.prepare_data(bars)
         
         current_price = df.iloc[-1]['close']
         time_elapsed = df.iloc[-1]['date'] - entry_time

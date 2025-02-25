@@ -11,11 +11,59 @@ class StructureReserve(Structure):
     首先对于开仓信号 直接反转direction就行
     其次对于平仓信号 还是要给到cal_exit_signal正向的direction(即反转direction取反)
     """
-    def __init__(self, dispear_angle=0.04, max_loss=0.02, max_profit=0.04, **kwargs):
+    def __init__(self, angle=0.02, dispear_angle=0.01, max_loss=0.01, max_profit=0.01, **kwargs):
         super().__init__(**kwargs)
+        self.angle          = angle
         self.dispear_angle  = dispear_angle
         self.max_loss       = max_loss
         self.max_profit     = max_profit
+        
+    def cal(self, bars):
+        if not self.has_prepare_data: self.prepare_data(bars)
+        df = self.data
+        
+        # 获取当前区块的 block_id
+        current_block_id = df['block_id'].max()
+        if current_block_id < 3: return False # 数据很短，没有信号
+        
+        current_block = self.get_block_by_id(current_block_id)
+        previous_block = self.get_block_by_id(current_block_id - 2)
+        result = self.compare_block(previous_block, current_block)
+        if result is not None:
+            return self.exclude_low_probability_structure(result, 0, current_block_id)
+            
+        if current_block_id > 4:
+            earlier_block = self.get_block_by_id(current_block_id - 4)
+            result = self.compare_block(earlier_block, current_block)
+            if result is not None:
+                return self.exclude_low_probability_structure(result, 1, current_block_id)
+
+    def compare_block(self, block_1, block_2):
+        """
+            :param
+            block_1: instanceof(pd.DataFrame) 要比较的对象 即前一个block
+            block_2: instanceof(pd.DataFrame) 一般是当前block
+        """
+        # 顶背离时DIF值需要在zero axis上方
+        if block_2['block_type'].sum() >= 1 and block_2['DIF'].sum() > 0: # 顶背离
+            block_1_close   = block_1['close'].max()
+            block_1_diff    = block_1['DIF'].max()
+            block_2_close   = block_2['close'].max()
+            block_2_diff    = block_2['DIF'].max()
+            angle           = block_2.iloc[-1]['angle']
+            # 股价新高，DIF不创新高，且最新的K线在调头
+            if block_2_close > block_1_close and block_2_diff < block_1_diff and angle < -1 * self.angle:
+                return "顶背离"
+            
+        if block_2['block_type'].sum() <= -1 and block_2['DIF'].sum() < 0: # 底背离
+            block_1_close   = block_1['close'].min()
+            block_1_diff    = block_1['DIF'].min()
+            block_2_close   = block_2['close'].min()
+            block_2_diff    = block_2['DIF'].min()
+            angle           = block_2.iloc[-1]['angle']
+            # 股价新低，DIF不创新低，且最新的K线在调头
+            if block_2_close < block_1_close and block_2_diff > block_1_diff and angle > self.angle:
+                return "底背离"
         
     def cal_exit_signal(self, bars, position_direction, entry_price, entry_time, holding_period=26):
         """
@@ -83,7 +131,8 @@ class StructureReserve(Structure):
             if signal and not is_within_30_minutes_of_close(bars):
                 direction = -1 if signal == "底背离" else 1 # 反转direction
                 amount = direction * pm.calculate_open_amount(bars)
-                pm.open_position(contract, "Structure", amount, bars)
+                if amount != 0:
+                    pm.open_position(contract, "Structure", amount, bars)
         else:
             # 平仓信号，因为持仓是反向的，所以此处对amount取反
             exit_signal = self.cal_exit_signal(bars, -1 * position["amount"], position["price"], position["date"])
