@@ -7,15 +7,28 @@ from utils import macd, vwap
 
 def prepare_trade_history(df, trade_history):
     # 确保 trade_history 不为空，并处理可能的空情况
-    if trade_history and isinstance(trade_history, list):
-        histories = pd.DataFrame(trade_history)
+    if isinstance(trade_history, list) and len(trade_history) != 0:
+            histories = pd.DataFrame(trade_history)
     else:
         histories = pd.DataFrame(columns=['date', 'direction'])
-
+    
+    if len(histories) != 0:
+        histories = histories.groupby(['date', 'direction'], as_index=False).agg({
+            'date': 'first',  # 假设 symbol 不变，取第一行的值
+            'symbol': 'first',    # 同理，取第一个
+            'strategy': 'first',  # 同理，取第一个
+            'open_or_close': 'first',   # 同理，取第一个
+            'direction': 'first',   # 同理，取第一个
+            'price': 'first',   # 同理，取第一个
+            'amount': 'sum',     # 对 amount 求和
+            'commission': 'sum',     # 对 commission 求和
+            'pnl': 'sum'     # 对 pnl 求和
+        })
+    
     # 确保 'date' 列存在并设置为索引
     if 'date' in histories.columns:
         histories['date'] = pd.to_datetime(histories['date'])
-        histories.set_index('date', inplace=True, drop=False)
+        histories.set_index('date', inplace=True, drop=True)
     else:
         # 如果没有 date 列，初始化一个空的索引
         histories = pd.DataFrame(columns=['date', 'direction'])
@@ -23,6 +36,7 @@ def prepare_trade_history(df, trade_history):
 
     # 将信号合并到主数据框，如果 histories 为空，'signal' 列会被填充为空值
     df['signal'] = histories['direction'] if not histories.empty else None
+    df['amount'] = histories['amount'] if not histories.empty else None
     return df
 
 def mark_bs_point(df, axes):
@@ -32,16 +46,30 @@ def mark_bs_point(df, axes):
     ax_main = axes[0]  # 主图的Axes对象
     
     # 提取买卖点的索引和价格
-    buy_signals = df[df['signal'] == 'Bought']
+    buy_signals = df[df['signal'] == 'BUY']
     buy_signals_position = [df.index.get_loc(idx) for idx in buy_signals.index]
     # 在主图上标注买卖点
     if buy_signals_position:
         ax_main.scatter(buy_signals_position, buy_signals['close'], label='Buy', color='green', marker='^', s=20)
         
-    sell_signals = df[df['signal'] == 'Sold']
+        for idx, pos in zip(buy_signals.index, buy_signals_position):
+            quantity = buy_signals.loc[idx, 'amount']  # 假设数量列是 'quantity'
+            ax_main.text(pos, buy_signals.loc[idx, 'close'] + 0.1,  # 在价格上方添加文本，+0.1调整位置
+                         str(quantity),  # 作为文本标注数量
+                         color='green', fontsize=8, ha='center', va='bottom')
+        
+    sell_signals = df[df['signal'] == 'SELL']
     sell_signals_position = [df.index.get_loc(idx) for idx in sell_signals.index]
     if sell_signals_position:
         ax_main.scatter(sell_signals_position, sell_signals['close'], label='Sell', color='red', marker='v', s=20)
+        
+        # 标注卖出数量
+        for idx, pos in zip(sell_signals.index, sell_signals_position):
+            quantity = sell_signals.loc[idx, 'amount']  # 假设数量列是 'quantity'
+            ax_main.text(pos, sell_signals.loc[idx, 'close'] - 0.1,  # 在价格下方添加文本，-0.1调整位置
+                         str(quantity),  # 作为文本标注数量
+                         color='red', fontsize=8, ha='center', va='top')
+
 
 def generate_macd_panel(df, panel_id=1):
     """

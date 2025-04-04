@@ -13,6 +13,7 @@ class Structure:
     def __init__(self):
         self.has_prepare_data = False
         self.data = None
+        self.relative_blocks = {}
         
     def prepare_data(self, bars):
         if self.has_prepare_data: return self.data
@@ -28,7 +29,10 @@ class Structure:
         return df
     
     def get_block_by_id(self, id):
-        return self.data[self.data['block_id'] == id]
+        if id not in self.relative_blocks:
+            self.relative_blocks = {bid: group for bid, group in self.data.groupby('block_id')}
+
+        return self.relative_blocks[id]
     
     def cal(self, bars):
         if not self.has_prepare_data: self.prepare_data(bars)
@@ -155,7 +159,7 @@ def get_prev_blockID(df, block_id):
         prev_block = df[df['block_id'] == prev_block_id]
         if not prev_block.empty:
             return prev_block_id
-        
+
 def process_blocks(df):
     """
     根据df['macd']生成连续的block并合并单柱block。
@@ -168,7 +172,6 @@ def process_blocks(df):
     """
     # 初始化 block_type
     df['block_type'] = df['MACD'].apply(lambda x: 1 if x >= 0 else -1)
-    
     # 初始化 block_id
     df['block_id'] = (df['block_type'] != df['block_type'].shift()).cumsum()
 
@@ -179,7 +182,7 @@ def process_blocks(df):
     # 合并单柱 block
     for block_id in single_blocks:
         # 获取前后的 block_id 和类型
-        prev_block_id = get_prev_blockID(df, block_id)
+        prev_block_id = 1 if block_id == 1 else df[df['block_id'] < block_id]['block_id'].max()
         if prev_block_id in block_sizes.index:
             df.loc[df['block_id'] == block_id, 'block_id'] = prev_block_id
 

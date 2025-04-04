@@ -9,12 +9,12 @@ symbols:
   - ['MSFT',  'NASDAQ']
   
   - ['AVGO',  'NASDAQ']
-  - ['PLTR',  'NASDAQ']
+  # - ['PLTR',  'NASDAQ']
   - ['IBKR',  'NASDAQ']
-  - ['VST',  'NASDAQ']
+  # - ['VST',  'NASDAQ']
 
-  - ['QQQ',   'NASDAQ']
-  - ['SOXL',  'ARCA']
+  # - ['QQQ',   'NASDAQ']
+  # - ['SOXL',  'ARCA']
 
 redis:
   host: "localhost"

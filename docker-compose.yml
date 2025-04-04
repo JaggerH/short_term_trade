@@ -11,3 +11,16 @@ services:
     environment:
       - REDIS_PASSWORD=verysecret
     command: ["redis-server", "--requirepass", "verysecret"]
+
+  # backtest:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: backtest_service
+  #   runtime: nvidia
+  #   environment:
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #   volumes:
+  #     - .:/workspace
+  #   command: ["/usr/bin/tail", "-f", "/dev/null"]
+  #   working_dir: /workspace

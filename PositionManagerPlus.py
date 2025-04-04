@@ -35,7 +35,7 @@ class PositionManager:
         
         if not self.debug:
             self.restore()
-        
+
     def on_account_summary(self, account_summary):
         if account_summary.tag == "NetLiquidation": self.net_liquidation = float(account_summary.value)
         if account_summary.tag == "AvailableFunds": self.available_funds = float(account_summary.value)
@@ -122,6 +122,7 @@ class PositionManager:
             "price": price,
             "strategy": strategy,
             "amount": amount,
+            "init_amount": amount,
             "date": date
         })
 
@@ -173,7 +174,7 @@ class PositionManager:
         trade = self.find_trade(is_match)
         self.remove_trade(trade)
         
-    def log(self, contract, strategy, open_or_close, direction, price, amount, date, commission, pnl=None):
+    def log(self, contract, strategy, open_or_close, direction, price, amount, date, commission, pnl=None, reason=None):
         """
         记录交易信息
         """
@@ -186,14 +187,16 @@ class PositionManager:
             "price": price,
             "amount": amount,
             "commission": commission,
-            "pnl": pnl
+            "pnl": pnl,
+            "reason": reason
         })
-        print(f'【{date}】【{strategy}】{open_or_close}: {contract.symbol}, 价格: {price}, 数量：{amount}, 浮动盈亏：{pnl}')
+        print(f'【{date}】【{strategy}】{open_or_close}: {contract.symbol}, 价格: {price}, 数量：{amount}，浮动盈亏：{pnl}, 原因：{reason}')
         if not self.debug: self.save()
 
-    def open_position(self, contract, strategy, amount, bars, allow_repeat_order = False):
+    def open_position(self, contract, strategy, amount, bars, reason=None, allow_repeat_order = False):
         if self.debug:
-            self.debug_open_position(contract, strategy, amount, bars.iloc[-1]['close'], bars.iloc[-1]['date'])
+            if amount != 0:
+                self.debug_open_position(contract, strategy, amount, bars.iloc[-1]['close'], bars.iloc[-1]['date'], reason=reason)
         else:
             is_match = lambda item: (
                 item["trade"].contract == contract and
@@ -201,18 +204,31 @@ class PositionManager:
                 item["open_or_close"] == "开仓"
             )
             if not allow_repeat_order and not self.find_trade(is_match):
-                self.ibkr_open_position(contract, strategy, amount, bars.iloc[-1]['date'])
-            
-    def debug_open_position(self, contract, strategy, amount, price, date):
+                self.ibkr_open_position(contract, strategy, amount, bars.iloc[-1]['date'], reason=reason)
+    
+    def debug_trade_price_slippage(self, amount, bars):
+        close = bars.iloc[-1]['close']
+        price = 0
+        if amount > 0: 
+            # 买入价格，增加买入价
+            price = close * (1 + SLIPPAGE)
+        else:
+            price = close * (1 - SLIPPAGE)
+        return price
+    
+    def debug_open_position(self, contract, strategy, amount, price, date, reason=None):
         """
         开仓操作：修改仓位 + 调用 IBKR API（如果不处于 debug 模式）
         """
         direction = 'BUY' if amount > 0 else 'SELL'
         self.add_position(contract, strategy, price, amount, date)
         commission = abs(amount * price) * TEST_COMMISSION_PERCENT
-        self.log(contract, strategy, "开仓", direction, price, amount, date, commission)  # 记录交易
-    
-    def ibkr_open_position(self, contract, strategy, amount, date, redundant_trade_info={}):
+        self.log(contract, strategy, "开仓", direction, price, amount, date, commission, reason=reason)  # 记录交易
+
+        # 更新 available_funds，扣除开仓所需的资金（包含佣金）
+        self.available_funds -= abs(amount * price) + commission
+        
+    def ibkr_open_position(self, contract, strategy, amount, date, reason=None, redundant_trade_info={}):
         def callback(self, trade, strategy=strategy):
             """
             回调函数，处理订单完成后的逻辑
@@ -222,15 +238,15 @@ class PositionManager:
                 commission, pnl = self.get_commission_and_pnl_from_fills(trade)
                 if trade.orderStatus.filled != 0:
                     self.add_position(contract, strategy, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time)
-                    self.log(contract, strategy, "开仓", trade.order.action, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time, commission)  # 记录交易    
+                    self.log(contract, strategy, "开仓", trade.order.action, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time, commission, reason=reason)  # 记录交易    
                 self.remove_trade_by_order_id(trade.order.orderId)
                 
         trade = self.ibkr_trade(contract, amount)
         self.add_trade(trade, strategy, "开仓", date, callback)
     
-    def close_position(self, position, bars):
+    def close_position(self, position, bars, reason=None):
         if self.debug:
-            self.debug_close_position(position, bars)
+            self.debug_close_position(position, bars, reason=reason)
         else:
             is_match = lambda item: (
                 item["trade"].contract == position["contract"] and
@@ -238,18 +254,19 @@ class PositionManager:
                 item["open_or_close"] == "平仓"
             )
             if not self.find_trade(is_match):
-                self.ibkr_close_position(position, bars)
+                self.ibkr_close_position(position, bars, reason=reason)
 
-    def debug_close_position(self, position, bars):
+    def debug_close_position(self, position, bars, reason=None):
         close_amount = -1 * position["amount"]
         direction = "SELL" if close_amount < 0 else "BUY" # 因为要做反向操作
         pnl = (bars.iloc[-1]["close"] - position["price"]) * position["amount"]
         
         self.remove_position(position)
         commission = abs(close_amount * bars.iloc[-1]["close"]) * TEST_COMMISSION_PERCENT
-        self.log(position["contract"], position["strategy"], "平仓", direction, bars.iloc[-1]["close"], close_amount, bars.iloc[-1]["date"], commission, pnl)  # 记录交易
-           
-    def ibkr_close_position(self, position, bars):
+        self.log(position["contract"], position["strategy"], "平仓", direction, bars.iloc[-1]["close"], close_amount, bars.iloc[-1]["date"], commission, pnl, reason=reason)  # 记录交易
+        self.available_funds += abs(position["amount"] * position["price"]) + pnl - commission
+            
+    def ibkr_close_position(self, position, bars, reason=None):
         close_amount = -1 * position["amount"]
         
         def callback(self, trade, position=position):
@@ -258,12 +275,55 @@ class PositionManager:
                 commission, pnl = self.get_commission_and_pnl_from_fills(trade)
                 
                 self.remove_position(position)
-                self.log(position["contract"], position["strategy"], "平仓", trade.order.action, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time, commission, pnl)  # 记录交易
+                self.log(position["contract"], position["strategy"], "平仓", trade.order.action, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time, commission, pnl, reason=reason)  # 记录交易
                 self.remove_trade_by_order_id(trade.order.orderId)
 
         trade = self.ibkr_trade(position["contract"], close_amount)
         self.add_trade(trade, position["strategy"], "平仓", bars.iloc[-1]["date"], callback)
+
+    def substract_position(self, position, substract_percent, bars, reason=None):
+        if self.debug:
+            self.debug_substract_position(position, substract_percent, bars, reason=reason)
+        else:
+            is_match = lambda item: (
+                item["trade"].contract == position["contract"] and
+                item["strategy"] == position["strategy"] and
+                item["open_or_close"] == "减仓"
+            )
+            if not self.find_trade(is_match):
+                self.ibkr_substract_position(position, substract_percent, bars, reason=reason)
+
+    def debug_substract_position(self, position, substract_percent, bars, reason=None):
+        substract_amount = -1 * (position["init_amount"] * substract_percent)
+        direction = "SELL" if substract_amount < 0 else "BUY" # 因为要做反向操作
+        pnl = (bars.iloc[-1]["close"] - position["price"]) * substract_amount           
+        commission = abs(substract_amount * bars.iloc[-1]["close"]) * TEST_COMMISSION_PERCENT
+        self.log(position["contract"], position["strategy"], "减仓", direction, bars.iloc[-1]["close"], substract_amount, bars.iloc[-1]["date"], commission, pnl, reason=reason)  # 记录交易
+        self.available_funds += abs(substract_amount * position["price"]) + pnl - commission
         
+        position_index = self.positions.index(position)
+        self.positions[position_index]["amount"] += substract_amount
+        if self.positions[position_index]["amount"] == 0:
+            self.remove_position(position)
+        
+    def ibkr_substract_position(self, position, substract_percent, bars, reason=None):
+        substract_amount = -1 * (position["init_amount"] * substract_percent)
+        
+        def callback(self, trade, position=position):
+            direction = 1 if trade.order.action == 'BUY' else -1
+            if trade.orderStatus.status == 'Filled':
+                commission, pnl = self.get_commission_and_pnl_from_fills(trade)
+                self.log(position["contract"], position["strategy"], "减仓", trade.order.action, trade.orderStatus.avgFillPrice, direction * trade.orderStatus.filled, trade.fills[-1].time, commission, pnl, reason=reason)  # 记录交易
+                self.remove_trade_by_order_id(trade.order.orderId)
+                
+                position_index = self.positions.index(position)
+                self.positions[position_index]["amount"] += direction * trade.orderStatus.filled
+                if self.positions[position_index]["amount"] == 0:
+                    self.remove_position(position)
+
+        trade = self.ibkr_trade(position["contract"], substract_amount)
+        self.add_trade(trade, position["strategy"], "减仓", bars.iloc[-1]["date"], callback)
+       
     def ibkr_trade(self, contract, amount):
         assert amount != 0
         direction = 'BUY' if amount > 0 else 'SELL'
@@ -281,7 +341,7 @@ class PositionManager:
         # vol = volatility(bars['close'])
         # target_market_value = net_liquidation * 0.1 * vol * 1000
         # print(f'波动率:{vol}，目标市值:{target_market_value}')
-        target_market_value = self.net_liquidation * 0.1
+        target_market_value = self.net_liquidation * 0.33
         if target_market_value > self.available_funds: return 0
         
         open_amount = target_market_value / bars.iloc[-1]['close']

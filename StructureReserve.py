@@ -19,8 +19,7 @@ class StructureReserve(Structure):
         self.max_profit     = max_profit
         
     def cal(self, bars):
-        if not self.has_prepare_data: self.prepare_data(bars)
-        df = self.data
+        df = self.prepare_data(bars)
         
         # 获取当前区块的 block_id
         current_block_id = df['block_id'].max()
@@ -72,8 +71,7 @@ class StructureReserve(Structure):
         position_direction: 持仓数量,持仓数量大于0即多单,小于0是空单
         """
         assert position_direction != 0, "持仓数量不能为零，结合仓位管理运行"
-        if not self.has_prepare_data: self.prepare_data(bars)
-        df = self.data
+        df = self.prepare_data(bars)
         
         current_price = df.iloc[-1]['close']
         time_elapsed = df.iloc[-1]['date'] - entry_time
@@ -124,9 +122,20 @@ class StructureReserve(Structure):
             )
             return pm.find_position(is_match)
         
+    def find_trade(self, contract, pm, open_or_close):
+        if pm.debug: return None
+        else:
+            is_match = lambda item: (
+                item["trade"].contract == contract and
+                item["strategy"] == "Structure" and
+                item["open_or_close"] == open_or_close
+            )
+            return pm.find_trade(is_match)
+        
     def update(self, contract, bars, pm):
         signal = self.cal(bars)
         position = self.find_position(contract, pm, bars)
+        
         if not position:
             if signal and not is_within_30_minutes_of_close(bars):
                 direction = -1 if signal == "底背离" else 1 # 反转direction
@@ -137,13 +146,13 @@ class StructureReserve(Structure):
             # 平仓信号，因为持仓是反向的，所以此处对amount取反
             exit_signal = self.cal_exit_signal(bars, -1 * position["amount"], position["price"], position["date"])
             exit_amount = position["amount"] * -1 # 这是退出的数量及方向
-            if exit_signal and not signal:
+            if exit_signal and not signal and not self.find_trade(contract, pm, "平仓"):
                 pm.close_position(position, bars)
                 
-            if exit_signal and signal:
-                direction = -1 if signal == "底背离" else 1
-                open_amount = direction * pm.calculate_open_amount(bars)
-                if open_amount * exit_amount > 0:
-                    print(f"【{bars.iloc[-1]['date']}】【{contract.symbol}】反手")
-                    pm.close_position(position, bars)
-                    pm.open_position(contract, "Structure", open_amount, bars)
+            # if exit_signal and signal:
+            #     direction = -1 if signal == "底背离" else 1
+            #     open_amount = direction * pm.calculate_open_amount(bars)
+            #     if open_amount * exit_amount > 0:
+            #         print(f"【{bars.iloc[-1]['date']}】【{contract.symbol}】反手")
+            #         if not self.find_trade(contract, pm, "平仓"): pm.close_position(position, bars)
+            #         if not self.find_trade(contract, pm, "开仓"): pm.open_position(contract, "Structure", open_amount, bars)

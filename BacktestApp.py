@@ -20,10 +20,11 @@ from utils import get_market_close_time
 from PositionManagerPlus import PositionManager
 
 class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
-    def __init__(self, config_file="config.yml", **kwargs):
-        super().__init__(config_file=config_file, **kwargs)
+    def __init__(self, config_file="config.yml", autoConnect=False, **kwargs):
+        super().__init__(config_file=config_file, autoConnect=autoConnect, **kwargs)
         debug = kwargs.get('debug', False)  # 默认值 False
         self.redis_client = self.get_redis(config_file)
+        
         self.pm = PositionManager(None, self.__class__.__name__, debug=debug, config_file=config_file)
         self.last_price = {}
         self.initial_capital = self.pm.net_liquidation
@@ -42,6 +43,7 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
         return self._redis
 
     def get_historical_data(self, contract, date, durationStr='1 D', barSizeSetting='1 min'):
+        date = get_market_close_time(date)
         redis_key = f"{contract.symbol}_{date}_{durationStr}_{barSizeSetting}"
         cached_data = self.redis_client.get(redis_key)
         
@@ -78,7 +80,6 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
         return bars_df
 
     def minutes_backtest(self, end_date, durationStr='100 D', pre_process_bar_callback=None):
-        end_date = get_market_close_time(end_date)
         daily = self.get_historical_data(self.contracts[0], end_date, durationStr, '1 day')
         minutes = {}
         for index, row in daily.iterrows():
@@ -87,7 +88,7 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
                 minutes[contract.symbol] = self.get_historical_data(contract, today) # 默认barSize 1 min
                 if pre_process_bar_callback:
                     minutes[contract.symbol] = pre_process_bar_callback(minutes[contract.symbol])
-
+                    
             for index in range(1, 391): # 分钟线长度390，range 391刚好到390
                 for contract in self.contracts:
                     bars = minutes[contract.symbol][:index]
@@ -106,8 +107,8 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
         })
         
     def update_position_manager_net_liquidation(self, contract, bars, has_new_bar):
+        if len(self.pm.positions) == 0 or not self.pm.debug: return # 测试情况下且position不为空才更新
         self.last_price[contract.symbol] = bars.iloc[-1]['close']
-        if len(self.pm.positions) == 0: return
         df = pd.DataFrame(self.pm.positions).set_index('contract', drop=False)
         df['last_price'] = df['contract'].map(lambda contract: self.last_price.get(str(contract.symbol), None))
         market_value = (df['last_price'] * df['amount']).abs().sum()
@@ -190,7 +191,8 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
                 "max_drawdown": 0,
                 "volatility": 0,
                 "sharpe_ratio": 0,
-                "daily_return": 0
+                "daily_return": 0,
+                "commission": 0
             }
 
         # 将 daily_net_liquidation 转换为 DataFrame
@@ -226,7 +228,8 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
             "max_drawdown": max_drawdown if pd.notna(max_drawdown) else 0,  # 最大回撤
             "sharpe_ratio": sharpe_ratio,  # 夏普比率
             "volatility": daily_volatility,  # 波动率
-            "daily_return": avg_daily_return  # 平均每日超额收益
+            "daily_return": avg_daily_return, # 平均每日超额收益
+            "commission": pd.DataFrame(self.pm.trade_log)["commission"].sum()
         }
         
     def plot_pnl(self):
@@ -234,32 +237,11 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
         绘制累计盈亏曲线，基于初始资金进行计算。
         """
         # 初始化 DataFrame
-        df = pd.DataFrame(self.pm.trade_log)
-        df["date"] = pd.to_datetime(df["date"], errors='coerce') 
-        
-        if df.empty or "pnl" not in df.columns or "commission" not in df.columns:
-            print("交易日志为空，或缺少 pnl/commission 列，无法绘制盈亏曲线。")
-            return
-
-        # 确保 date 是 datetime 类型，并去掉时间部分（按天计算）
-        df["date"] = pd.to_datetime(df["date"]).dt.date
-
-        # 填充 NaN pnl 为 0（开仓时没有 pnl）
-        df["pnl"] = df["pnl"].fillna(0)
-        df["commission"] = df["commission"].fillna(0)
-
-        # 扣减佣金后的盈亏
-        df["net_pnl"] = df["pnl"] - df["commission"]
-
-        # 按日期求和，计算每日净收益
-        daily_pnl = df.groupby("date")["net_pnl"].sum().reset_index()
-
-        # 计算资金净值
-        daily_pnl["capital"] = self.initial_capital + daily_pnl["net_pnl"].cumsum()
+        df = pd.DataFrame(self.daily_net_liquidation)
 
         # 绘制盈亏曲线
         plt.figure(figsize=(10, 6))
-        plt.plot(daily_pnl["date"], daily_pnl["capital"], label="P&L (Capital)", color='b', linewidth=2)
+        plt.plot(df["date"], df["net_liquidation"], label="P&L (Capital)", color='b', linewidth=2)
         plt.xlabel("Date")
         plt.ylabel("Capital (Profit and Loss)")
         plt.title("PnL Curve (Capital Based)")
@@ -268,3 +250,4 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
         plt.legend()
         plt.tight_layout()
         plt.show()
+        

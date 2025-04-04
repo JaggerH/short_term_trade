@@ -10,6 +10,7 @@ class RBreak:
         
         self.open_position_price = None
         self.debug = True
+        self.output_log = False
         
     def setParams(self, df=None, date=None):
         """
@@ -27,9 +28,10 @@ class RBreak:
                 formatDate=1
             )
             df = pd.DataFrame(bars)
-        high = df.iloc[-1]['high']  # 前一日的最高价
-        low = df.iloc[-1]['low']  # 前一日的最低价
-        close = df.iloc[-1]['close']  # 前一日的收盘价
+            df = df.iloc[0]
+        high = df['high']  # 前一日的最高价
+        low = df['low']  # 前一日的最低价
+        close = df['close']  # 前一日的收盘价
         
         pivot = (high + low + close) / 3  # 枢轴点
         self.bBreak = high + 2 * (pivot - low)  # 突破买入价
@@ -73,13 +75,13 @@ class RBreak:
                 # 在空仓的情况下，如果盘中价格超过突破买入价，则采取趋势策略，即在该点位开仓做多
                 amount = self.calculate_open_amount(bars)
                 self.pm.open_position(self.contract, "RBreak", amount, bars)
-                print(f"{bars.iloc[-1]['date']}空仓,盘中价格超过突破买入价: 开仓做多")
+                if self.output_log: print(f"{bars.iloc[-1]['date']}空仓,盘中价格超过突破买入价: 开仓做多")
                 self.open_position_price = bars.iloc[-1]["close"]
             elif bars.iloc[-1]["close"] < self.sBreak:
                 # 在空仓的情况下，如果盘中价格跌破突破卖出价，则采取趋势策略，即在该点位开仓做空
                 amount = -1 * self.calculate_open_amount(bars)
                 self.pm.open_position(self.contract, "RBreak", amount, bars)
-                print(f"{bars.iloc[-1]['date']}空仓,盘中价格跌破突破卖出价: 开仓做空")
+                if self.output_log: print(f"{bars.iloc[-1]['date']}空仓,盘中价格跌破突破卖出价: 开仓做空")
                 self.open_position_price = bars.iloc[-1]["close"]
         # 设置止损条件
         else:  # 有持仓时
@@ -87,29 +89,35 @@ class RBreak:
             # 开仓价与当前行情价之差大于止损点则止损
             if (position_long and change_percent <= -1 * STOP_LOSS_PERCENT) or \
                     (position_short and change_percent >= STOP_LOSS_PERCENT):
-                print(f'{bars.iloc[-1]["date"]}达到止损点，全部平仓')
-                self.pm.close_position(self.contract, "RBreak", bars)  # 平仓
+                if self.output_log: print(f'{bars.iloc[-1]["date"]}达到止损点，全部平仓')
+                if position_long: 
+                    self.pm.close_position(position_long, bars)  # 平仓
+                    position_long = None
+                if position_short: 
+                    self.pm.close_position(position_short, bars)  # 平仓
+                    position_short = None
             # 反转策略:
             if position_long:  # 多仓条件下
                 if bars['high'].max() > self.sSetup and bars.iloc[-1]["close"] < self.sEnter:
                     # 多头持仓,当日内最高价超过观察卖出价后，
                     # 盘中价格出现回落，且进一步跌破反转卖出价构成的支撑线时，
                     # 采取反转策略，即在该点位反手做空
-                    self.pm.close_position(self.contract, "RBreak", bars)  # 平仓
+                    print(position_long, self.pm.positions)
+                    self.pm.close_position(position_long, bars)  # 平仓
                     amount = -1 * self.calculate_open_amount(bars)
                     self.pm.open_position(self.contract, "RBreak", amount, bars)
-                    print(f"{bars.iloc[-1]['date']}多头持仓,当日内最高价超过观察卖出价后跌破反转卖出价: 反手做空")
+                    if self.output_log: print(f"{bars.iloc[-1]['date']}多头持仓,当日内最高价超过观察卖出价后跌破反转卖出价: 反手做空")
                     self.open_position_price = bars.iloc[-1]["close"]
             elif position_short:  # 空头持仓
                 if bars['low'].min() < self.bSetup and bars.iloc[-1]["close"] > self.bEnter:
                     # 空头持仓，当日内最低价低于观察买入价后，
                     # 盘中价格出现反弹，且进一步超过反转买入价构成的阻力线时，
                     # 采取反转策略，即在该点位反手做多
-                    self.pm.close_position(self.contract, "RBreak", bars)  # 平仓
+                    self.pm.close_position(position_short, bars)  # 平仓
                     amount = self.calculate_open_amount(bars)
                     self.pm.open_position(self.contract, "RBreak", amount, bars)
-                    print(f"{bars.iloc[-1]['date']}空头持仓,当日最低价低于观察买入价后超过反转买入价: 反手做多")
+                    if self.output_log: print(f"{bars.iloc[-1]['date']}空头持仓,当日最低价低于观察买入价后超过反转买入价: 反手做多")
                     self.open_position_price = bars.iloc[-1]["close"]
         # if self.now.hour == 14 and self.now.minute == 59:
-        #     self.pm.close_position(self.contract, "RBreak", bars)
+        #     self.pm.close_position(position_long, bars)
         #     print('全部平仓')

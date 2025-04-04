@@ -26,15 +26,18 @@ class TradeApp:
         ta = StructureTradeApp()
         ta.subscribe_to_bars()
     """
-    def __init__(self, config_file="config.yml", debug=False, host="127.0.0.1", port=7497, clientId=1, **kwargs):
+    def __init__(self, config_file="config.yml", debug=False, host="127.0.0.1", port=7497, clientId=1, autoConnect=True, **kwargs):
         self.ib = IB()
         self.host = host
         self.port = port
         self.clientId = clientId
         
         self.connected = False
-        self.connect_to_ibkr()  # 尝试连接IBKR
-
+        if autoConnect:
+            self.connect_to_ibkr()  # 尝试连接IBKR
+            # 初始化 PositionManager
+            self.pm = PositionManager(self.ib, self.__class__.__name__, debug=debug, config_file=config_file)
+            
         # 加载配置文件
         with open(config_file, "r", encoding="utf-8") as file:
             symbols = yaml.safe_load(file)["symbols"]
@@ -42,8 +45,6 @@ class TradeApp:
         # 创建合约列表
         self.contracts = [Stock(symbol, 'SMART', 'USD', primaryExchange=exchange) for symbol, exchange in symbols]
         
-        # 初始化 PositionManager
-        self.pm = PositionManager(self.ib, self.__class__.__name__, debug=debug, config_file=config_file)
     
     def connect_to_ibkr(self):
         """

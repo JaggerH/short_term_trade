@@ -52,17 +52,7 @@ def volatility(close):
     log_returns = np.log(close / close.shift(1)).dropna()
     return log_returns.std()
 
-def get_market_close_time(date=None):
-    """
-    获取指定日期的美股市场收盘时间（东部时间 16:00）。
-
-    参数:
-        date (optional): 指定日期，可以是 timestamp、datetime 对象、pandas.Timestamp 或字符串（yyyymmdd 或 yyyy-mm-dd 格式），
-                         或 datetime.date 对象。如果为空，使用当前日期。
-
-    返回:
-        datetime: 东部时间的市场收盘时间。
-    """
+def normalized_time(date=None):
     # 设置东部时区
     eastern = pytz.timezone('US/Eastern')
     
@@ -101,11 +91,40 @@ def get_market_close_time(date=None):
             raise ValueError("date 参数必须是 timestamp、datetime、pandas.Timestamp、datetime.date 或字符串（yyyymmdd 或 yyyy-mm-dd）")
     else:
         date = datetime.now(eastern)
+        
+    return date
 
+def get_market_close_time(date=None):
+    """
+    获取指定日期的美股市场收盘时间（东部时间 16:00）。
+
+    参数:
+        date (optional): 指定日期，可以是 timestamp、datetime 对象、pandas.Timestamp 或字符串（yyyymmdd 或 yyyy-mm-dd 格式），
+                         或 datetime.date 对象。如果为空，使用当前日期。
+
+    返回:
+        datetime: 东部时间的市场收盘时间。
+    """
+    date = normalized_time(date)
     # 设置指定日期的收盘时间为当天的 16:00
     market_close = date.replace(hour=16, minute=0, second=0, microsecond=0)
-
     return market_close
+
+def get_market_open_time(date=None):
+    """
+    获取指定日期的美股市场收盘时间（东部时间 16:00）。
+
+    参数:
+        date (optional): 指定日期，可以是 timestamp、datetime 对象、pandas.Timestamp 或字符串（yyyymmdd 或 yyyy-mm-dd 格式），
+                         或 datetime.date 对象。如果为空，使用当前日期。
+
+    返回:
+        datetime: 东部时间的市场收盘时间。
+    """
+    date = normalized_time(date)
+    # 设置指定日期的开盘时间为当天的 09:30
+    market_open = date.replace(hour=9, minute=30, second=0, microsecond=0)
+    return market_open
 
 def is_within_30_minutes_of_close(df):
     """
@@ -128,3 +147,39 @@ def is_within_30_minutes_of_close(df):
 
     # Check if within 30 minutes of close
     return last_time + pd.Timedelta(minutes=30) >= market_close_time
+
+def is_within_specific_minutes_of_close(df, minute):
+    """
+    Check if the market is within 30 minutes of close.
+
+    Args:
+        df (pd.DataFrame): A DataFrame containing market data with a 'date' column (datetime).
+
+    Returns:
+        bool: True if the market is within 30 minutes of close, otherwise False.
+    """
+    if df.empty or 'date' not in df.columns:
+        raise ValueError("DataFrame is empty or does not contain a 'date' column")
+
+    # Get the timestamp of the last row
+    last_time = df.iloc[-1]['date']
+    market_close_time = get_market_close_time(df.iloc[0]['date'])
+    return last_time + pd.Timedelta(minutes=minute) >= market_close_time
+
+def is_within_specific_minutes_of_open(df, minute):
+    """
+    Check if the market is within specific minutes of open.
+
+    Args:
+        df (pd.DataFrame): A DataFrame containing market data with a 'date' column (datetime).
+
+    Returns:
+        bool: True if the market is within 30 minutes of close, otherwise False.
+    """
+    if df.empty or 'date' not in df.columns:
+        raise ValueError("DataFrame is empty or does not contain a 'date' column")
+
+    # Get the timestamp of the last row
+    last_time = df.iloc[-1]['date']
+    market_open_time = get_market_open_time(df.iloc[0]['date'])
+    return last_time <= market_open_time + pd.Timedelta(minutes=minute)

@@ -1,22 +1,18 @@
 symbols:
   # The SEVEN
-  - ['TSLA',  'NASDAQ']
-  - ['NVDA',  'NASDAQ']
+  # - ['TSLA',  'NASDAQ']
+  # - ['NVDA',  'NASDAQ']
   - ['AAPL',  'NASDAQ']
-  - ['AMZN',  'NASDAQ']
-  - ['GOOGL', 'NASDAQ']
-  - ['META',  'NASDAQ']
-  - ['MSFT',  'NASDAQ']
+  # - ['AMZN',  'NASDAQ']
+  # - ['GOOGL', 'NASDAQ']
+  # - ['META',  'NASDAQ']
+  # - ['MSFT',  'NASDAQ']
   
-  - ['AVGO',  'NASDAQ']
-  - ['IBKR',  'NASDAQ']
-  - ['VST',  'NASDAQ']
-
-  # - ['QQQ',   'NASDAQ']
-  # - ['SOXL',  'ARCA']
-
+  # - ['AVGO',  'NASDAQ']
+  # - ['IBKR',  'NASDAQ']
+  # - ['VST',  'NASDAQ']
 redis:
-  host: "localhost"
+  host: "127.0.0.1"
   port: 6379
   password: verysecret
   db: 0
