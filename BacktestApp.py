@@ -12,6 +12,9 @@ import yaml
 import redis
 import pytz
 import matplotlib.pyplot as plt
+import os
+import zipfile
+from datetime import datetime, timedelta
 
 # 解决get_historical_data中pd.read_json需要用
 from io import StringIO
@@ -31,6 +34,9 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
         self.onBarUpdateEvent = [self.update_position_manager_net_liquidation, self.on_bar_update]
         self.afterMarketCloseEvent = [self._after_market_close]
         self.daily_net_liquidation = []
+        
+        with open(config_file, "r", encoding="utf-8") as file:
+            self.offline_tick_root = yaml.safe_load(file)["offline_ticks_path"]
 
     def get_redis(self, config_file):
         if not hasattr(self, '_redis'):
@@ -79,6 +85,115 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
             self.redis_client.set(redis_key, bars_df.to_json(orient='records'))
         return bars_df
 
+    def read_offline_tick(self, contract, date):
+        """
+        根据合约和日期，从离线数据缓存中只解压指定合约的 tick CSV 文件，并通过 pandas 读取。
+        
+        参数：
+        contract: 合约对象，要求有 .symbol 属性（例如 "AAPL"）
+        date: 字符串格式的日期，格式为 "YYYYMMDD"，例如 "20250123"
+        data_root: 离线数据根目录，例如 "/数据根目录"
+        
+        返回：
+        包含 tick 数据的 pandas DataFrame
+        """
+        date = str(date).replace("-", "")[:10]
+        # 构造月份目录，例如 "202501"
+        month_folder = date[:6]
+        # 构造 zip 文件的完整路径，例如 /数据根目录/202501/20250123.zip
+        zip_filename = f"{date}.zip"
+        zip_path = os.path.join(self.offline_tick_root, month_folder, zip_filename)
+        
+        # 构造合约对应的 CSV 文件名称，假设命名格式为 {合约代码}.csv
+        csv_filename = f"{contract.symbol}.csv"
+        
+        if not os.path.exists(zip_path):
+            raise FileNotFoundError(f"找不到压缩文件: {zip_path}")
+        
+        # 打开 zip 压缩包，只读取指定的 CSV 文件
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            # 检查压缩包内是否存在目标 CSV 文件
+            if csv_filename not in zf.namelist():
+                raise FileNotFoundError(f"在 {zip_path} 中未找到文件: {csv_filename}")
+            # 使用 zf.open 打开目标 CSV 文件对象（无需完全解压整个包）
+            with zf.open(csv_filename) as csv_file:
+                # 直接使用 pandas 读取 CSV 文件数据
+                df = pd.read_csv(csv_file)
+                # datetime例子：'2025-03-21 04:00:00:000611'
+                # 先替换最后一个冒号为点，变成 pandas 可识别格式
+                df['datetime'] = df['datetime'].str.replace(r':(\d{6})$', r'.\1', regex=True)
+                # 转换成时间类型
+                df['datetime'] = pd.to_datetime(df['datetime'], format='%Y-%m-%d %H:%M:%S.%f')
+                # 补上美东时区（Eastern Time）
+                eastern = pytz.timezone('America/New_York')
+                df['datetime'] = df['datetime'].dt.tz_localize(eastern)
+                df = df.rename(columns={'datetime': 'time'})
+                df = df[(df['time'].dt.time >= pd.to_datetime('09:30').time()) &
+                        (df['time'].dt.time <= pd.to_datetime('16:00').time())]
+        return df
+    
+    def get_historical_ticks(self, contract, date):
+        """
+        连续获取指定交易日内所有 tick 数据。
+        采用向后分页的策略：从交易结束时间开始，
+        每次调用 reqHistoricalTicks(endDateTime=current_end) 获取最多 1000 条数据，
+        并更新 current_end 为该批数据中的最早 tick 时间，
+        循环直至覆盖到交易开始时间。
+        """
+        eastern = pytz.timezone('US/Eastern')
+        # 定义交易开始和结束时间（美东时间）
+        trading_start = eastern.localize(datetime.strptime(f"{date} 09:30:00", "%Y-%m-%d %H:%M:%S"))
+        # trading_end = eastern.localize(datetime.strptime(f"{date} 16:00:00", "%Y-%m-%d %H:%M:%S"))
+        trading_end = get_market_close_time(date)
+
+        all_ticks = []
+        # 从交易结束时间开始分页
+        current_end = trading_end
+
+        while current_end > trading_start:
+            # 调用 reqHistoricalTicks：只传 endDateTime（startDateTime 留空）
+            ticks = self.ib.reqHistoricalTicks(
+                contract,
+                "",  # startDateTime 为空
+                current_end,
+                1000,
+                whatToShow='TRADES',
+                useRth=True,
+                ignoreSize=False
+            )
+
+            # 将返回的 tick 数据转换为 DataFrame
+            partial_df = pd.DataFrame([{
+                'time': t.time.astimezone(eastern),
+                'price': t.price,
+                'size': t.size
+            } for t in ticks])
+            print(partial_df.iloc[0]["time"])
+            if partial_df.empty:
+                break
+
+            all_ticks.append(partial_df)
+            
+            # 本批数据通常按降序排列，获取最早的 tick 时间
+            oldest_tick_time = partial_df['time'].min()
+
+            # 如果已经获取到的最早时间早于或等于交易开始，则退出循环
+            if oldest_tick_time <= trading_start:
+                break
+
+            # 更新 current_end 为最早 tick 的时间（下一次请求将获取更早的数据）
+            current_end = oldest_tick_time
+
+        if all_ticks:
+            # 合并所有分页数据，并按时间升序排序
+            ticks_df = pd.concat(all_ticks).reset_index(drop=True)
+            ticks_df.sort_values(by='time', inplace=True)
+            # 保留交易日内的数据
+            ticks_df = ticks_df[ticks_df['time'] >= trading_start]
+            return ticks_df
+        else:
+            return pd.DataFrame()
+    
     def minutes_backtest(self, end_date, durationStr='100 D', pre_process_bar_callback=None):
         daily = self.get_historical_data(self.contracts[0], end_date, durationStr, '1 day')
         minutes = {}

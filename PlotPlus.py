@@ -7,11 +7,12 @@ import matplotlib.ticker as mtick
 from utils import macd, vwap
 
 class PlotPlus:
-    def __init__(self, df):
+    def __init__(self, df, ema_window=10):
         self.df = df
+        self.ema_window = ema_window
         
     def prepare_history(self, history):
-        if len(history) == 0: return False
+        if len(history) == 0: return pd.DataFrame()
         if isinstance(history, list) and len(history) != 0:
             histories = pd.DataFrame(history)
         
@@ -32,13 +33,13 @@ class PlotPlus:
 
         self.df['signal'] = histories['direction']
         self.df['amount'] = histories['amount']
-        return True
+        return histories
     
     def plot_basic(self, lines=None, style_type="line"):
         """
         假设df只包含OHLC and date
         """
-        assert style_type in ["line", "candle"], "style_type参数只接收line或candle"
+        assert style_type in ["line", "candle", "renko"], "style_type参数只接收line\candle\renko"
         if not isinstance(self.df.index, pd.DatetimeIndex):
             self.df = self.df.set_index(pd.to_datetime(self.df['date']))
             
@@ -55,7 +56,8 @@ class PlotPlus:
                 line_panel.append(line_instance)
             panels += line_panel
             
-        fig, self.axes = mpf.plot(self.df, type=style_type, 
+        fig, self.axes = mpf.plot(self.df, 
+                type=style_type, # line/candle/renko
                 style='yahoo',
                 ylabel='Price', 
                 addplot=panels,
@@ -76,7 +78,7 @@ class PlotPlus:
 
     def generate_ema_panel(self):
         if 'cv_10' not in self.df.columns:
-            self.df['cv_10'] = self.df['close'].ewm(span=10, adjust=False).mean()
+            self.df['cv_10'] = self.df['close'].ewm(span=self.ema_window, adjust=False).mean()
         
         ema_panel = [
             mpf.make_addplot(self.df['cv_10'], color='green', linestyle='solid', width=1, label='EMA 10')
@@ -140,15 +142,19 @@ class PlotPlus:
         """
         在主图上标记买卖点
         """
-        if not self.prepare_history(history): return
+        history_df = self.prepare_history(history)
+        # print(history_df)
+    
+        if history_df.empty: return
         ax_main = self.axes[0]  # 主图的Axes对象
+        history_df = history_df.loc[self.df.iloc[0]["date"]:self.df.iloc[-1]["date"]]
         
         # 提取买卖点的索引和价格
         buy_signals = self.df[self.df['signal'] == 'BUY']
         buy_signals_position = [self.df.index.get_loc(idx) for idx in buy_signals.index]
         # 在主图上标注买卖点
         if buy_signals_position:
-            ax_main.scatter(buy_signals_position, buy_signals['close'], label='Buy', color='green', marker='^', s=20)
+            ax_main.scatter(buy_signals_position, history_df[history_df["amount"] > 0]['price'], label='Buy', color='green', marker='^', s=20)
             
             for idx, pos in zip(buy_signals.index, buy_signals_position):
                 quantity = buy_signals.loc[idx, 'amount']  # 假设数量列是 'quantity'
@@ -159,7 +165,7 @@ class PlotPlus:
         sell_signals = self.df[self.df['signal'] == 'SELL']
         sell_signals_position = [self.df.index.get_loc(idx) for idx in sell_signals.index]
         if sell_signals_position:
-            ax_main.scatter(sell_signals_position, sell_signals['close'], label='Sell', color='red', marker='v', s=20)
+            ax_main.scatter(sell_signals_position, history_df[history_df["amount"] < 0]['price'], label='Sell', color='red', marker='v', s=20)
             
             # 标注卖出数量
             for idx, pos in zip(sell_signals.index, sell_signals_position):
@@ -168,12 +174,12 @@ class PlotPlus:
                             str(quantity),  # 作为文本标注数量
                             color='red', fontsize=8, ha='center', va='top')
     
-    def mark_segment(self, column, color="gray"):
+    def mark_segment(self, column, value=True, color="gray"):
         periods = []
         start = None
 
         for i in range(len(self.df)):
-            if self.df.iloc[i][column]:
+            if self.df.iloc[i][column] == value:
                 if start is None:
                     start = self.df.index[i]  # 记录震荡市场的起点
             else:
@@ -203,6 +209,47 @@ class PlotPlus:
 
         # 让右侧 y 轴的范围与主 y 轴对齐
         ax_return.set_ylim(self.df['return'].min(), self.df['return'].max())
-    
+
+    def plot_volume_profile(self, df_tick, bin_size=0.05):
+        """
+        在主图上绘制 Volume Profile。
+
+        参数：
+        - df_tick: 包含 tick 数据的 DataFrame，需包含列 ['price', 'volume']
+        - bin_size: 价格分箱大小，用于 Volume Profile 的分箱
+        """
+        if df_tick.empty:
+            print("Tick 数据为空，无法生成 Volume Profile。")
+            return None
+        df_tick = df_tick.copy()
+        df_tick = df_tick[(df_tick['price'] <= self.df['high'].max()) & (df_tick['price'] >= self.df['low'].min())]
+
+        # 计算价格区间
+        price_min = np.floor(df_tick['price'].min() / bin_size) * bin_size
+        price_max = np.ceil(df_tick['price'].max() / bin_size) * bin_size
+        bins = np.arange(price_min, price_max + bin_size, bin_size)
+
+        # 将价格分配到区间
+        df_tick['price_bin'] = pd.cut(df_tick['price'], bins)
+
+        # 计算每个价格区间的总成交量
+        volume_profile = df_tick.groupby('price_bin')['volume'].sum().reset_index()
+        volume_profile['price_mid'] = volume_profile['price_bin'].apply(lambda x: x.mid)
+
+        # 归一化成交量，用于调整条形图的宽度
+        max_volume = volume_profile['volume'].max()
+        volume_profile['normalized_volume'] = volume_profile['volume'] / max_volume * 200  # 调整宽度比例
+
+        # 在主图上绘制水平条形图
+        for _, row in volume_profile.iterrows():
+            self.axes[0].barh(
+                row['price_mid'],  # 水平条形图的 y 值
+                row['normalized_volume'],  # 宽度
+                height=bin_size * 0.9,  # 条形图的高度
+                color='steelblue',
+                alpha=0.7,  # 透明度
+                align='center'
+            )
+        
     def show(self):
         plt.show()

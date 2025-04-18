@@ -11,6 +11,7 @@ services:
     environment:
       - REDIS_PASSWORD=verysecret
     command: ["redis-server", "--requirepass", "verysecret"]
+    restart: always
 
   # backtest:
   #   build:

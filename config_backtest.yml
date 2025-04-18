@@ -2,15 +2,16 @@ symbols:
   # The SEVEN
   # - ['TSLA',  'NASDAQ']
   # - ['NVDA',  'NASDAQ']
-  - ['AAPL',  'NASDAQ']
+  # - ['AAPL',  'NASDAQ']
   # - ['AMZN',  'NASDAQ']
-  # - ['GOOGL', 'NASDAQ']
+  - ['GOOGL', 'NASDAQ']
   # - ['META',  'NASDAQ']
   # - ['MSFT',  'NASDAQ']
   
   # - ['AVGO',  'NASDAQ']
   # - ['IBKR',  'NASDAQ']
   # - ['VST',  'NASDAQ']
+offline_ticks_path: C:\Users\Jagger\Downloads\美股tick数据
 redis:
   host: "127.0.0.1"
   port: 6379

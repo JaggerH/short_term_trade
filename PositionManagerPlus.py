@@ -193,6 +193,18 @@ class PositionManager:
         print(f'【{date}】【{strategy}】{open_or_close}: {contract.symbol}, 价格: {price}, 数量：{amount}，浮动盈亏：{pnl}, 原因：{reason}')
         if not self.debug: self.save()
 
+    def open_position_LMT(self, contract, strategy, amount, price, bars, reason=None):
+        if self.debug:
+            if amount != 0 and (bars.iloc[-1]["low"] <= price <= bars.iloc[-1]["high"]):
+                self.debug_open_position(contract, strategy, amount, price, bars.iloc[-1]['date'], reason=reason)
+                return True
+            return False
+        
+    def close_position_LMT(self, position, price, bars, reason=None):
+        if self.debug:
+            if (bars.iloc[-1]["low"] <= price <= bars.iloc[-1]["high"]):
+                self.debug_close_position(position, bars, reason=reason)
+                
     def open_position(self, contract, strategy, amount, bars, reason=None, allow_repeat_order = False):
         if self.debug:
             if amount != 0:
