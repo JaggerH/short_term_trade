@@ -21,6 +21,7 @@ from io import StringIO
 from utils import get_market_close_time
 
 from PositionManagerPlus import PositionManager
+from PlotPlus import PlotPlus
 
 class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
     def __init__(self, config_file="config.yml", autoConnect=False, **kwargs):
@@ -37,7 +38,12 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
         
         with open(config_file, "r", encoding="utf-8") as file:
             self.offline_tick_root = yaml.safe_load(file)["offline_ticks_path"]
-
+            
+        # debug params
+        # minute debug
+        self.minute_daily = None
+        self.minute_idx = 0
+        
     def get_redis(self, config_file):
         if not hasattr(self, '_redis'):
             # 加载配置
@@ -196,6 +202,7 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
     
     def minutes_backtest(self, end_date, durationStr='100 D', pre_process_bar_callback=None):
         daily = self.get_historical_data(self.contracts[0], end_date, durationStr, '1 day')
+        self.minute_daily = daily.copy()
         minutes = {}
         for index, row in daily.iterrows():
             for contract in self.contracts:
@@ -204,13 +211,13 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
                 if pre_process_bar_callback:
                     minutes[contract.symbol] = pre_process_bar_callback(minutes[contract.symbol])
                     
-            for index in range(1, 391): # 分钟线长度390，range 391刚好到390
+            idx = 1
+            while idx < len(minutes[contract.symbol]):
                 for contract in self.contracts:
-                    bars = minutes[contract.symbol][:index]
-                    # self.on_bar_update(contract, bars, True)
-                    # self.update_position_manager_net_liquidation(contract, bars)
+                    bars = minutes[contract.symbol][:idx]
                     for callback in self.onBarUpdateEvent:
                         callback(contract, bars, True)
+                idx += 1
                     
             for callback in self.afterMarketCloseEvent:
                 callback(today)
@@ -337,14 +344,29 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
         else:
             annualized_return = avg_daily_return * 252  # 假设252个交易日
             sharpe_ratio = (annualized_return - risk_free_rate) / daily_volatility
-
+            
+        # 统计胜率和盈亏比，只统计平仓记录
+        trade_log = pd.DataFrame(self.pm.trade_log)
+        closed_trades = trade_log[trade_log['open_or_close'] == '平仓']
+        win_count = (closed_trades['pnl'] > 0).sum()
+        loss_count = (closed_trades['pnl'] < 0).sum()
+        profit_sum = closed_trades.loc[closed_trades['pnl'] > 0, 'pnl'].sum()
+        loss_sum = closed_trades.loc[closed_trades['pnl'] < 0, 'pnl'].abs().sum()
+        total_trades = win_count + loss_count
+        win_rate = win_count / total_trades if total_trades > 0 else 0
+        avg_profit = profit_sum / win_count if win_count > 0 else 0
+        avg_loss = loss_sum / loss_count if loss_count > 0 else 0
+        profit_loss_ratio = avg_profit / avg_loss if avg_loss > 0 else 0
+        
         return {
             "cumulative_pnl": cumulative_pnl,  # 最终累计收益
             "max_drawdown": max_drawdown if pd.notna(max_drawdown) else 0,  # 最大回撤
             "sharpe_ratio": sharpe_ratio,  # 夏普比率
             "volatility": daily_volatility,  # 波动率
             "daily_return": avg_daily_return, # 平均每日超额收益
-            "commission": pd.DataFrame(self.pm.trade_log)["commission"].sum()
+            "commission": pd.DataFrame(self.pm.trade_log)["commission"].sum(), # 手续费
+            "win_rate": win_rate,  # 胜率
+            "profit_loss_ratio": profit_loss_ratio,  # 盈亏比
         }
         
     def plot_pnl(self):
@@ -365,4 +387,59 @@ class BacktestApp(TradeApp):  # 继承自 TradeApp 以便复用已有代码
         plt.legend()
         plt.tight_layout()
         plt.show()
-        
+
+    def plot_chan_daily_trade(self, skip_not_trade=True):
+        while self.minute_idx < len(self.minute_daily):
+            date = self.minute_daily.iloc[self.minute_idx]['date']
+            trade_log = pd.DataFrame(self.pm.trade_log)
+            trade_log['datetime_str'] = pd.to_datetime(trade_log['date']).dt.strftime('%Y/%m/%d %H:%M')
+            has_trade = not trade_log[trade_log['date'].dt.date == date].empty
+            self.minute_idx += 1
+            if has_trade and skip_not_trade:
+                trade_slice = trade_log[trade_log['date'].dt.date == date][['date', 'symbol', 'direction', 'amount', 'price', 'pnl', 'commission', 'reason']]
+                print(self.minute_idx, date, f'pnl is {trade_slice["pnl"].sum()}', f'commission is {trade_slice["commission"].sum()}')
+                print(trade_slice)
+                from Chan import CChan
+                from ChanConfig import CChanConfig
+                from Common.CEnum import AUTYPE, KL_TYPE
+                from Plot.PlotDriver import CPlotDriver
+                with open('../chan_config.yml', 'r', encoding='utf-8') as f:
+                    cfg = yaml.safe_load(f)
+                chan = CChan(
+                    code=self.contracts[0].symbol,
+                    begin_time="1 D",
+                    end_time=date,
+                    data_src="custom:IBKR_API.IBKR_API",
+                    lv_list=[KL_TYPE.K_1M],
+                    config=CChanConfig(cfg['cchan_config']),
+                    autype=AUTYPE.QFQ,
+                )
+                
+                grouped = trade_log.groupby(['datetime_str', 'direction'], as_index=False).agg({ 'amount': 'sum' })
+                direction_map = {'BUY': 'up', 'SELL': 'down'}
+                grouped['mapped_direction'] = grouped['direction'].map(direction_map)
+                direction_color_map = {'BUY': 'green', 'SELL': 'red'}
+                grouped['mapped_color'] = grouped['direction'].map(direction_color_map)
+                markers = { row['datetime_str']: (str(int(row['amount'])), row['mapped_direction'], row['mapped_color']) for _, row in grouped.iterrows() }
+                
+                plot_para = cfg["plot_para"]
+                plot_para["marker"] = { "markers": markers }
+                
+                plot_driver = CPlotDriver(chan, plot_config=cfg['plot_config'], plot_para=plot_para)
+                plot_driver.figure.show()
+                break
+
+    def plot_daily_trade(self):
+        while True:
+            date = self.minute_daily.iloc[self.minute_idx]['date']
+            trade_log = pd.DataFrame(self.pm.trade_log)
+            has_trade = not trade_log[trade_log['date'].dt.date == date].empty
+            self.minute_idx += 1
+            if has_trade:
+                print(self.minute_idx, date)
+                df = self.get_historical_data(self.contracts[0], date)
+                pp = PlotPlus(df, ema_window=20)
+                pp.plot_basic(style_type="line")
+                pp.mark_bs_point(self.pm.trade_log)
+                pp.show()
+                break

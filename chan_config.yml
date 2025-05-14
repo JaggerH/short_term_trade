@@ -1,0 +1,47 @@
+step_cchan_config:
+  trigger_step: true
+  min_zs_cnt: 1
+  zs_algo: custom_over_seg
+  zs_combine: false
+
+cchan_config:
+  # bi_strict: true
+  # divergence_rate: .inf
+  # bsp2_follow_1: false
+  # bsp3_follow_1: false
+  # bs1_peak: false
+  zs_combine: false
+  min_zs_cnt: 1
+  trigger_step: false
+  skip_step: 0
+  macd_algo: peak
+  bs_type: "1,2"
+  print_warning: false
+  zs_algo: custom_over_seg
+  cal_atr: false
+
+plot_config:
+  plot_kline: true
+  plot_kline_combine: true
+  plot_bi: true
+  plot_seg: true
+  plot_eigen: false
+  plot_zs: true
+  plot_macd: true
+  plot_mean: false
+  plot_channel: false
+  plot_bsp: false
+  plot_extrainfo: false
+  plot_demark: false
+  plot_marker: True
+  plot_rsi: false
+  plot_kdj: false
+  plot_atr: false
+  plot_segzs: true
+
+plot_para:
+  seg: {}
+  bi: {}
+  figure:
+    x_range: 390
+  marker: {}
